@@ -76,3 +76,10 @@
 编译检查发现原new URL helper路径对外部解释器不适用；改为text asset内嵌、短期自有脚本materialize并finallycleanup，未改helper权限/业务逻辑。Windows编译后的隔离apply/revoke与完整CLI主机列表实际通过。测试将累计4次PowerShell进程的独立既有key场景拆为单独test，避免默认5秒超时，不增加timeout或skip；首失败原件保留。回退包装器需同步发布原生helper文件，不能回退代码却漏发资产；历史receipt/operations不可删除以“修复重试”。
 
 Prime原锁依赖审计是另仓库owner任务。原锁29报告不等于29已证exploit；undici/MCP获准同major修复与独立原生gate后另行提交，不把其未来结果混入Env此版本。未运行auditfix/改Env依赖。
+
+## 两仓当前核验版本
+
+- Env `20b73e796a33adf16170ee8cf5fdc1c83b45d120`：已push，Windows208pass/type0；精确173文件Linux207pass/1skip/type0；Windows与Linux编译后原生helper隔离实效均通过。运行中的资源服务版本仍按部署清单，不由仓库HEAD推断。
+- Prime `fad44047ed8aac675c2a4a4f7a809a5c94c8a8d6`：正常hooks提交push，root独立ls-remote完整SHA一致；Undici7.30.1/MCPsdk1.32.0，只2第三方锁条目和2workspace声明，无其他transitive漂移。正常check、OAuth40、Win网络/loader34、Linux工具/installer101pass1skip及actualHTTP/help通过。剩余安全告警与条件路径另有审计，不宣称全清。
+
+Prime此次依赖回退可revert该提交并用原锁重建独立目录，但会恢复对应已知告警；旧原锁VM验证副本未被改动。不能在live服务任意覆盖node_modules或将安全回退解释为需要删除Env日志/数据。两个仓库无CI改动、无force/amend共享历史。

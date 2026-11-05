@@ -65,7 +65,10 @@
 - **E23**：owned-service-switch-20261105T210140Z/OWNED-SERVICE-VERSION-SWITCH.md：只本轮owned158 PID5390静默后备份自造DB/config/source引用，停止并以e4d同config/DB起新PID6718/44481，7表全行相等。主控实际旧路径unreachable→新严格forward恢复读170bytes/同SHA，无write重放；一个client配置发现两当前host资源/目录/文件通过。旧5b服务未触。
 
 - **E24**：full-fixture-recovery-20261105T210440Z/COMPLETE-FIXTURE-RECOVERY.md：自造配置路径重写非byte相同、7表/API逻辑全等、原pending2→0、journal不变、callback0，两个独立service进程6988/7007正常退出。首外部copy目标已存在失败单独保留；非生产迁移/崩溃演练。
-- **E25**：编译后 Windows helper fixture 实际apply/ownedrevoke exit0（compiled-helper-actual-direct-argv），完整compiledCLI hosts exit0；embedded-helpers-final-full Windows208pass/type0。helper源码资产内嵌后自有临时materialize，不把构建成功当外部helper执行通过；Linux编译效果另验。
+- **E25**：编译后 Windows helper fixture 实际apply/ownedrevoke exit0（compiled-helper-actual-direct-argv），完整compiledCLI hosts exit0；embedded-helpers-final-full Windows208pass/type0。helper源码资产内嵌后自有临时materialize，不把构建成功当外部helper执行通过；Linux精确173文件207pass/1skip/type0，实际compiledELF Unix隔离apply/revoke+真visudo通过exit0，完整compiledCLI hosts也通过。
+
+- **E26**：vm-20b73e7-20261105T211339Z/VM-20B73E7-COMPILED-VALIDATION.md：精确20b73e7/173源码哈希不变，Linux207pass1skip0fail/type0；编译ELF实际helper文件效果通过，不是只build成功。Windows对应208pass/type0/compiledfixture同证据分开保留。
+- **E27**：Prime fad44047ed8aac675c2a4a4f7a809a5c94c8a8d6 已正常hooks提交push并由root独立远端SHA核对，Undici7.30.1/MCPsdk1.32.0两同major升级，原报告中两包告警消失。OAuth40/Win网络loader34/Linuxtoolsinstaller101pass1skip/actualUndiciHTTP和两平台CLIhelp通过。原锁与新锁fixture分开；剩余Windows26/Linux27告警继续明确，不称生产全安全或将公告数量等同利用。
 
 ## 推送后复核结论
 

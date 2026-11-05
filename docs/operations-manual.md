@@ -465,4 +465,4 @@ Unix 使用现有账户真实 home、保留 authorized_keys、visudo 候选校�
 
 当前 Bun 编译入口将 Unix Python 与 Windows PowerShell helper 作为源码资产内嵌。外部解释器不能打开 Bun 虚拟文件路径，因此调用前由共享 helper 生命周期生成自有临时脚本，结束后清理；不把私钥、token 或用户请求内嵌到二进制。请求继续从 stdin 发送，真实管理员/确认与平台条件不变。单文件 Env 仍需要已安装的相应 Python3/visudo 或 PowerShell 才能执行本机注册；不是零OS依赖承诺。
 
-Windows 已实际运行编译后的 fixture程序完成隔离文件/ACL应用与owned撤销，完整编译CLI主机ID列表也实际通过。构建成功不单独证明helper可执行；各平台编译实际效果分别记录，Linux结果以对应后续回执为准。不要把测试fixture选项当作真实配权授权。
+Windows 已实际运行编译后的 fixture程序完成隔离文件/ACL应用与owned撤销，完整编译CLI主机ID列表也实际通过。构建成功不单独证明helper可执行；各平台编译实际效果分别记录，Linux精确20b73e7已完成：207pass/1skip/type0，编译后ELF实际调用Python+真visudo完成自有隔离文件apply/ownedrevoke，完整compiledCLI hosts也通过，源码与锁前后不变。不要把测试fixture选项当作真实配权授权。

@@ -3,6 +3,7 @@
 - [目标详细设计](docs/design.md)：产品愿景、架构、待实现方案和验收标准。
 - [目标协议设计](docs/protocol.md)：注册、多路径、Agent 协作与恢复的未来契约。
 - [实验性原型快速开始](docs/quickstart.md) · [开发交接](HANDOFF.md)
+- [当前环境验收报告](docs/acceptance-report.md) · [正常跨主机流程](docs/normal-workflow.md)
 - [运行与运维手册](docs/operations-manual.md) · [演进与回退](docs/change-history-and-rollback.md) · [初始目标对照](docs/goal-conformance.md)
 
 ## 项目定位
@@ -95,7 +96,7 @@ EnvInHands 自身提供不可变 Agent 注册和追加式修改记录，支持�
 
 ## 当前状态
 
-最新功能提交 `e4ddb77` 已推送并核对远端完整 SHA：Windows **207 通过**、类型检查通过；精确171文件源码包在 Debian VM 为 **206 通过、1 跳过、0 失败**，类型检查通过。唯一跳过为缺少外部 Prime checkout 的可选直接导入测试。历史版本统计保留在各阶段报告，不代表当前功能范围。
+最新功能提交 `ba9a9d2` 已推送并核对远端完整 SHA：Windows **221 通过**、类型检查通过；精确186文件源码包在 Debian VM 为 **220 通过、1 跳过、0 失败**，类型检查通过。唯一跳过为缺少外部 Prime checkout 的可选直接导入测试。正常原生Node完整Prime冷启动已加载7个Env扩展/2skills，实际发现、浏览、读取两主机不同工作内容并核对原操作；无禁用skills/builtins、无新增付费调用。历史结果与完整范围见 [验收报告](docs/acceptance-report.md)。
 
 Windows→VM 已实测严格 SSH、编译 proxy→relay/node→真实 sshd、新连接探测/候选回退、正式 `access` 加密入口以及 Unix tmux 正常 detach/reconnect 保留同一进程。统一 `device register` 登记本地观察，`device inventory` 包含显式待验证/失败记录；Windows 与 Linux 已真实登记到控制主机，但仍是 pending，不是管理员 ready。新版源码通过不表示运行中旧服务已升级。
 

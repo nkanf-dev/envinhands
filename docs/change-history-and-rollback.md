@@ -105,3 +105,11 @@ Windows原rename确实改变protectedDACL，首观察保留；nativeReplace后or
 正常profile组合验收首跑Node控制器在导入.ps1时失败；换Bun控制器的诊断虽然起了真实NodeCLI/skills，但sharedtools没有加载，不冒称通过。根因是SharedFilesClient复用shared-files服务端模型和API envelope常量，间接引入只应服务端加载的Windows原生资产。
 
 提取shared-files-model.ts（纯schema/hash/constants，无filesystem/Bun/nativehelper），client与operation类型仅依赖该模型；服务端保留兼容重导。真实Node+tsx客户端随后按同私有catalog发现并读两实际主机内容通过，Bun精确6pass/type0，完整正常PrimeCLI另以实际回执闭合。此为必要解耦，不新建框架或把Node依赖加到Env核心；回退必须同时恢复client/model/API引用，不能只删新模型文件。
+
+## 最后验收归档
+
+功能源码ba9a9d289eb1adb18799e18b2d597c7c1aa0d6c9已push/远端SHA核对，Windows221pass/type0；精确186文件Linux220pass1skip/type0，完整CLI编译+Node纯client图实际导入0，原锁hash不变。正常完整Prime88b7客户端七Env扩展/两skills冷启动及八turn两host浏览读取/inspect通过；0工作文件写/0paid。资源服务仍2801896，pure-model拆分后的API兼容性由新client实测，不将未热升级说成已部署最新文件。
+
+`acceptance-report.md`统一最后验收范围，`normal-workflow.md`给产品正常入口操作。旧失败、首负控不足/并发临时源状态、纠正后实际exit与源码hash仍留在交接证据；没有删失败或强行升级真实权限来完成验收。运行/回退资料见私有配置引用与工作区12号清单，禁止把token/DB/keys/spool/session/编译产物提交Git。
+
+此轮仅文档归档，不改变服务wire或数据schema。完整初始目标的真实六设备、逐指定身份管理员/实际配权和异地两站点仍未满足；后续按所有者提供的获准条件继续，不将该缺口改名为已完成或突然加联邦/HA框架作为首版门槛。

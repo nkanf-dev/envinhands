@@ -28,7 +28,7 @@
 | `files inspect debian` | `{"operationId":"<原write返回的ID>"}` | 查询同host原intent/outcome；nextAfter非null则同ID加after继续 |
 | `files read debian` | 同原文件 | 实际内容/hash与工作目标、记录相符 |
 
-冲突返回 status=conflict。网络/完成不确定返回 unknown，exit1仍须保留 stdout JSON，不能丢弃 host/operation 引用。inspect 与 readback 后再决定，不自动重写。同一 session 多次修改同文件也各有独立 operation。每个写入在目标服务记录注册声明、实际机器/资源、前后 hash 与结果；这不是强身份认证或资源独占。
+冲突返回 status=conflict。网络/完成不确定返回 unknown，exit1仍须保留 stdout JSON，不能丢弃 host/operation 引用。inspect 与 readback 后再决定，不自动重写。同一 session 多次修改同文件也各有独立 operation。每个写入在目标服务记录注册声明、实际机器/资源与结果；成功共享写入记录实际前后 hash，未知/失败时 hash 可缺失，不能据此推断未修改；这不是强身份认证或资源独占。
 
 ## 3. 正常 Prime 会话
 

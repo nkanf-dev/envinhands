@@ -4,11 +4,15 @@
 
 ## 最新可接手版本
 
-功能提交 `a3c0e426f82dca07498975811921ce1e2dca23ce` 已完成独立 Windows/VM 验证：Windows 181 pass；Debian 隔离副本 180 pass、1 skip、0 fail，两端 typecheck 均为 0。VM 的唯一 skip 是无外部 Prime checkout 的可选直接导入，不是 181 全通过。123 文件源码包及锁文件前后 hash 一致。
+- Env功能源码 `ba9a9d289eb1adb18799e18b2d597c7c1aa0d6c9` 已push并独立核远端SHA：Windows221pass/type0，精确186文件Linux220pass/1skip/0fail/type0。唯一skip为可选外部Prime直接导入；单独真实Prime证据见下。
+- Prime fork `88b7d8cbc137fd307f29aa51edac3e472ea174ff` 已正常hooks提交push、root独立核SHA；必要source-loader修复和最小安全依赖/ZIP修复分提交保留。剩余依赖告警明确，不称全安全。
+- 真实模型三独立Windows CLI消息环与全员自主CTF100成立；后续Windows↔Debian不同工作内容互读/改/读回/双方独立盘hash+署名成立。Debian真正完整Prime CLI工具循环也改过Windows工作文件，不只SDK。
+- 最终正常冷启动：原Node controller→真实Prime CLI PID8332/session01a1adbf-9e54-7198-95a3-b51ab7b8e7ec，新配置7Env扩展/2skills且未禁用skills/builtin，8实际Agent工具turn读取两host与inspect原operation，0workwrite/0paid。首Node客户端误加载.ps1由纯model/server边界修复，未用Bun控制器绕过。
+- 正式资源服务运行源码2801896（Windows/VM），ba9是兼容纯客户端模型/文档提取，**不声称已热升级服务**。旧5b8deaf控制bus保持独立。实际PID/入口/私有配置引用和owned清理边界见工作区 handoffs/12-current-runtime-manifest.json，凭据值不进Git。
 
-三个真正独立 Prime CLI/daemon/session 使用 gpt-6.1-terra 完成 Windows→VM 协作和自然分工的自建 CTF，全员参与，评分 100。`device register` / `device inventory`、`access` 正式 API/CLI、工具事件署名观察和只读文件适配已接线；真实普通用户 SSH 不代表管理员 ready，当前 sudo -n 仍失败。运行中旧 bus 未随隔离测试升级。
+先读 [当前验收](docs/acceptance-report.md)、[正常流程](docs/normal-workflow.md)、[运维手册](docs/operations-manual.md)、[目标对照](docs/goal-conformance.md) 和 [演进回退](docs/change-history-and-rollback.md)。下面保留接手与中间阶段历史路径/统计，不能覆盖本节当前事实。
 
-原始目标与每项证据见 [目标对照](docs/goal-conformance.md)，部署/使用/备份见 [运维手册](docs/operations-manual.md)，阶段顺序与撤回见 [演进与回退](docs/change-history-and-rollback.md)。下面旧路径和统计是历史基线，不替代本节。当前功能提交在保留首失败后已正常 push，并由 git ls-remote 完整 SHA 核对。三台 Mac、完整六设备、真实异地网络、逐 Agent 管理员正向授权与自动配权/撤销仍未闭合。
+原始目标未全部完成：真实六设备/Mac/异地、每个指定Agent管理员正向与真实配权/撤销、工具外所有修改路径、长期生产安全仍需继续。Unix/Windows owner-confirmed helper已实现并隔离效果测试，不是实际系统已授admin；当前真实sudo-n仍失败。不要用更多无关矩阵或重复付费CTF替代所需外部条件，也不得未经授权改key/sudoers/groups/firewall/public监听。
 
 ## 仓库与基线
 
@@ -22,7 +26,7 @@ Hyper-V VM `EnvInHands-Debian12` 是本项目**当前控制主机**，不仅是�
 
 环境基线：Debian 12.15 amd64、4 vCPU、4 GiB、64 GiB 动态盘、Hyper-V Default Switch NAT。网络地址可能变化，连接前复核；SSH 必须继续使用既有受信 host key 和获准身份。当前 `sudo -n` 失败，不能宣称管理员 ready；控制主机角色与最终测试使用许可不等于项目已部署或权限已满足。运行时/依赖安装由环境协调统一准备，具体安装仍按获准范围执行；不隐含公钥/sudoers 修改或公网开放许可。不得把私钥、密码和 token 写进仓库或交接。
 
-## 当前开发阶段：署名记录与可移植执行
+## 历史阶段：署名记录与可移植执行
 
 本阶段主要能力在 EnvInHands 仓库，不依赖继续增加 Prime 业务分支：
 
@@ -39,7 +43,7 @@ Windows Bun1.4.4 native stage run：169 项通过、0失败、0跳过，typechec
 
 最终目标与开发原则、全Agent本地远程修改署名记录必须在压缩交接中保留，见工作区 handoffs/06、07、08。阶段commit/push已由用户明确要求；只提交已验证自有范围，不提交凭据、测试DB、便携运行时、编译二进制或临时报告。
 
-## 已有代码
+## 接手/中间阶段代码快照（历史）
 
 - `src/control.ts`：内存机器、心跳、资源留言控制面。无认证、TLS 或持久化；不得公网暴露。
 - `src/relay.ts`：WebSocket 反向 TCP 中继实验原型。仅共享 bearer 密钥；任何持钥者能冒充节点或连接节点；有基础应用层限额但无完整公网防护；不支持透明 TCP 半关闭，也不能保证 WebSocket 关闭后的远端排空错误会传回。不要生产使用。

@@ -12,7 +12,7 @@
 | 不同用户自主协商，无固定负责人 | 已实测可用 | 三位 Agent 分别受 Windows 静态源只读、VM 动态执行、独立复核要求约束，自主发消息分工；自建获准 CTF 评分 100，全员均有有效工作。E2 | 这是实际模型正常工具循环，但 controller 仍按轮提供继续机会，不是完全无人调度；运行时关闭 skills/内置工具，与 E14/E15 的独立 skills 加载证据不能合并。不承诺任意题或无授权资源。 |
 | 三人六设备与 Intel/AMD 兼容 | 受阻 | Windows x64 与 Debian VM amd64 已运行；Linux 原生采集已核对。E3、E4 | Linux desktop、Intel NAS 实机、三台 Mac、各自网络尚未逐台验收；兼容代码不等于硬件实测。 |
 | 设备元数据登记到管理主机 | 已实测可用 | Windows/Linux 原生信息实际登记，API 与独立 SQLite 读回 pending；device register 共用采集路径，macOS 有映射 fixture。E4、E5 | 这里只是元数据，不称最终“注册成功”。macOS 真机仍缺。 |
-| 所有者确认后的公钥/admin 自动配置与撤销 | 未完成 | 旧 Linux 助手仍为计划；新增 runUnixRegistration/provision 已实现 explicit confirm、现有管理员上下文、owned receipt 的 key/sudoers 应用与撤销。Linux 真 Python/visudo 隔离效果测试通过，真实系统未应用。src/registration/apply.ts | Unix 实际文件效果/部分撤销已测；真实设备仍需所有者授权并以自身身份验 SSH/admin，不能以隔离 fixture 说已配权。Windows 原生 helper 也已实现 owner-confirmed apply/owned revoke，真实 NTFS 文件/ACL 的隔离 fixture 通过；组操作只 fixture mock，真实管理员上下文/自定义 sshd 及 Mac 实机仍未验证。 |
+| 所有者确认后的公钥/admin 自动配置与撤销 | 部分完成 | 旧 Linux 助手仍为计划；新增 runUnixRegistration/provision 已实现 explicit confirm、现有管理员上下文、owned receipt 的 key/sudoers 应用与撤销。Linux 真 Python/visudo 隔离效果测试通过，真实系统未应用。src/registration/apply.ts | Unix 实际文件效果/部分撤销已测；真实设备仍需所有者授权并以自身身份验 SSH/admin，不能以隔离 fixture 说已配权。Windows 原生 helper 也已实现 owner-confirmed apply/owned revoke，真实 NTFS 文件/ACL 的隔离 fixture 通过；组操作只 fixture mock，真实管理员上下文/自定义 sshd 及 Mac 实机仍未验证。 |
 | 每个目标 Agent 自身 SSH 与管理员验证 | 部分完成 | 实际身份/session/route/TTL 客户端检查、严格 host key、真实普通用户 SSH；sudo 不足正确 not-ready。E6 | 不能用服务端身份替代其他 Agent。指定身份逐一授权、正向 admin 验证未完成；当前 VM sudo -n 失败。sshIdentityRef 已改实际 OpenSSH 公钥 SHA256，前后指纹变化不 ready；服务持久 /v1/access-evidence 按注册/session/target/route/key/user 保存声明观察，latest 负向盖旧正向，不升全局 machine ready。实际 Windows 主控使用既有获准key/严格hostkey登录、真实sudo-n失败并按该公钥指纹/session存入当前VM API，not-ready已实际读回；正向管理员授权仍缺。 |
 | Windows 实际 SSH 管理员令牌 | 受阻 | 固定命令检查有效令牌的代码和 mock 通过，非仅检查组成员。test/windows-readiness.test.ts | 需获准 Windows SSH 会话与真实管理员身份；尚未实测。 |
 | NAT 主动出站目标与受控 relay SSH 通路 | 部分完成 | Windows 编译 proxy→加密承载→VM relay/node→同 VM 真实 sshd，错误 secret/host key 拒绝；受控字节通路实测成功。E7 | 还不是独立 NAT 站点仅出站接入共同外部入口；异地、多故障域、入口断开与恢复未闭合。 |
@@ -27,8 +27,12 @@
 | 轻量节点、解耦复用与便携运行 | 部分完成 | Env 核心独立于 Prime，CLI/外部适配共享核心，无新增 Env 第三方依赖；Bun 单文件与用户态运行时已用。E3、E7 | 全目标架构发布、安装包与内存/CPU 预算、长期服务/开机恢复尚未全面交付。 |
 | Agent skills 与当前平台集成 | 已实测可用 | 全新空 agentDir、Env 工作目录经 Prime 正常 SettingsManager/DefaultResourceLoader 自动发现两个原始项目 skill，正文完整可读，diagnostics 为空，原文件 hash 未变。E14 | 这是发现/可读取，不声称模型已读取遵守正文或正文所有历史命令已复验。 |
 | relay 完整流控与关闭语义 | 部分完成 | 实际 SSH 正常通路和现有限额可用。E7 | 新 relay v2 原生方向 EOF/1MiB 请求与响应/反向 FIN/输出排空及提前关闭拒绝已通过（Win focused24+root combined212/type0，Linux focused24）；完整175快照Linux211pass1skip/type0、Windows212pass/type0；Windows compiled proxy→加密承载→VM新v2 relay/node→真实sshd id/uname exit0已通过，不称旧服务已升级。生产容量/异地长期稳定另测。 |
-| 服务/数据/配置回退与使用手册 | 部分完成 | 完整运维、阶段变更与回退说明已交付，区分代码、DB、凭据与 spool。E11 | 原 live5b8deaf 未动；新增正式服务158文件冻结在 VM 新配置/新DB两真实OS进程重启通过，config/记录不变，新 inventory 正常。现新独立服务承载双向共享工作；不是旧 live 自动升级、开机服务或整体系灾备。 |
-| 两仓库 Conventional Commits 与及时 push | 已实测可用 | Prime 61a643b 已推送且干净；Env 5b8deaf/1fe9e56/7aee3e8/a3c0e42 与文档89791d9 已推送，git ls-remote 完整 SHA 核对89791d9。E12 | 网络首失败独立保留；后续文档提交仍按实际回执核对。 |
+| 服务/数据/配置回退与使用手册 | 部分完成 | 完整运维、阶段变更与回退说明已交付，区分代码、DB、凭据与 spool。E11 | 原 live5b8deaf 未动；正式服务经独立双进程重启、完整fixture恢复及owned版本切换到2801896，config/原记录/工作hash保持；Win/VM新inventory/catalog/inspect均正常，实际运行清单见handoffs/12。新独立服务承载双向共享工作；不是旧 live 自动升级、开机服务或整体系灾备。 |
+| 两仓库 Conventional Commits 与及时 push | 已实测可用 | Env功能ba9a9d2与Prime88b7d8c已推送，root独立ls-remote完整SHA核对；中间提交/失败见E12及Git历史，后续修复阶段逐一保留。 | 网络首失败独立保留；包含最终验收报告的文档提交按实际回执确认，不虚构自身SHA。 |
+
+## 当前最后版本
+
+最后功能提交ba9a9d289eb1adb18799e18b2d597c7c1aa0d6c9：Windows221pass/type0；精确186文件Linux220pass1skip0fail/type0，源码/lock不变、编译CLI/Node纯client导入实测0。两host运行服务2801896，纯模型提取不倒写旧部署；正常完整Prime组合8实际toolturn已通过E34，最新全量结论见 [验收报告](acceptance-report.md)。
 
 ## 可核查证据索引
 
@@ -85,7 +89,7 @@
 
 原目标未全部符合。可确认真实 Prime→VM 的协作/授权普通用户工作正常；不能把 pending 设备等同注册最终成功。独立复核所指的 Unix 应用/撤销、实际公钥身份+持久观察、direct CLI/API署名与正式服务重启已继续实现并实测其受控范围；不能把这一批新结果倒写为旧版已完成。仍有 Windows 真实管理员应用/SSH令牌正向、工具外修改边界、实际管理员正向、整体系生产恢复及永久服务等缺口。真实六设备、每身份管理员正向与两实际地点/两个可用入口还需获准环境。正常 profile 与相对 edit 定位是本次独立审查后完成的具体修复，不倒写此前模型报告。
 
-下一步优先：1）新版本独立副本按正常配置复现并持久保管其服务/配置/数据引用，另行协调 live 升级；2）确认各设备、Agent 公钥身份及管理员授权清单，完成相应开发与实际验证；3）在已有共同加密入口下开展两实际地点正常工作、署名同步、一次自有断线后的新连接回退/结果核对。不要用重复付费 CTF 或增加泛化矩阵替代这些工作。
+下一步优先：1）保管已完成的正常配置、运行清单与回退资料（最终冷启动、两个主机owned版本切换和完整fixture恢复已实测，不能再列作未做）；2）确认各实际设备、指定Agent公钥身份及管理员授权清单，完成真实安装/撤销与逐身份正向验证；3）在获准共同加密入口下接入至少两个实际地点，做正常工作/署名同步及自有断线新连接回退。不要用重复付费 CTF 或增加泛化矩阵替代这些工作。
 
 ## 尚需的外部条件
 

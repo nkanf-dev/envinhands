@@ -1,8 +1,11 @@
 # EnvInHands 运行与运维手册
 
-> 本文是当前实现的操作手册草案，不是“全部最终目标完成”证明。适用于已获准的团队资源。主控维护最终验收和阶段变更/回退记录；环境协调维护本文。命令中的 `<...>` 都是需填写的非敏感路径或标识，不可原样执行。任何安装、服务切换、配权和网络变更都须有对应授权。
+> 本文是当前获准实现与实测范围的运行手册，不是“全部最终目标完成”证明。适用于已获准的团队资源。主控维护最终验收和阶段变更/回退记录；环境协调维护本文。命令中的 `<...>` 都是需填写的非敏感路径或标识，不可原样执行。任何安装、服务切换、配权和网络变更都须有对应授权。
 
 ## 1. 部署角色与已验证范围
+
+最后功能源码为ba9a9d2（Windows221pass，精确Linux220pass1skip，types均0），正常完整Node Prime冷启动7Env扩展/2skills与两host读取/原操作核对已通过。当前资源服务源码为2801896，最新pure-client模型提取未改变服务wire，不能把仓库HEAD当运行部署。工作区handoffs/12-current-runtime-manifest.json列真实PID、版本、私有config引用和owned释放边界，不含token。最终范围见 [验收报告](acceptance-report.md)，正常用户先按 [normal-workflow.md](normal-workflow.md) 操作。
+
 
 - **控制主机**：当前为 Hyper-V `EnvInHands-Debian12`，Debian 12.15 amd64、4 vCPU、4 GiB RAM、64 GiB 动态盘。它就是当前控制主机，可用于已实现范围的最终集成验收，不必先换真实 NAS。
 - **客户端**：Windows 上新建多个真正独立的 Prime Agent TS 0.9.8 系列实例，每个实例有独立进程、配置、工作目录、Agent ID、session、数据目录。现有开发会话只开发、部署和审查，不充当被测客户端。

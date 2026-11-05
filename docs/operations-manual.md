@@ -426,15 +426,29 @@ try {
 
 ## 16. 两台主机的不同工作内容共享
 
+客户端可将两台主机的获准 HTTPS/加密 loopback URL 与 token 放入私有 `ENVINHANDS_SHARED_HOSTS` JSON（`{hosts:[{hostId,url,token}]}`）。`files hosts` 或 Prime 的 envinhands_list_shared_hosts 仅列主机 ID；后续命令/工具按 hostId 选择，不必每次手改环境或先知另一主机的绝对路径。主机列表不是远端消息可写配置，token 不返回给模型。见 prime-profile.md。
+
 每台资源主机可运行同一正式 `service`，在私有配置中给出自身 `machineId` 与明确 `sharedRoots`。例如 Windows 只共享验收工作目录，Debian 只共享另一份动态工作目录。客户端通过获准 HTTPS 或严格 SSH 加密 loopback 入口访问所选主机，不共享整个 home/Secrets，不自动授予 SSH 或管理员权限。
 
 ```text
+<env-command> files resources
+<env-command> files list
 <env-command> files read
 <env-command> files write
 ```
+
+resources 无需 stdin，返回资源 ID/共享目录类型/能力，不暴露主机绝对根路径。list 的 stdin 是 `{resourceId,path?}`，默认根目录，只列当前层最多100项；hasMore 表示不完整，无递归或假装全部。Agent 对应工具为 envinhands_list_shared_resources / envinhands_list_shared_files。先发现资源和文件，再读改，不要求用户预先知道所有路径。
 
 read 的 stdin 是 `{resourceId,path}`；write 再提供 UTF-8 `text` 与此前 read 返回的 `expectedSha256`。null 仅用于创建不存在的文件，现有文件必须哈希匹配；冲突应读回并协调，未知回复不能盲重写。当前限定单个 UTF-8 文件 64KiB、JSON envelope 68KiB，无二进制/整个目录同步承诺。正常 Prime profile 提供 `envinhands_read_shared_file` / `envinhands_write_shared_file`，使用真实执行 session 署名，不靠任意 shell 拼命令。
 
 目标服务记录执行前 intent、执行后结果、实际 target machine/resourceId/path 和前后 hash；正文不复制入审计。对方再读与资源主机本地独立读盘核对，才能报告修改完成。所选共享目录内仍按可信协作模型工作：不是 OS 沙箱、资源锁或对抗任意外部写者的原子 CAS。跨机通路断开后，先核对文件/原 operation，再决定是否重试。
 
 双向 Windows↔Debian 正常验收必须分别记录：Windows 对 Debian 文件 read→compare-write→readback，以及 Debian 对 Windows 不同文件执行相同行为；仅发消息、单向执行命令或共享只读静态源不替代本项。当前具体回执以本阶段交接证据为准，不能在两方向结束前提前写为通过。
+
+## 17. 原生注册应用与撤销的操作边界
+
+`provision` 从 stdin 接收明确确认的 apply/revoke 请求，使用当前平台 helper。需显式 Agent/machine/session/signature 和绝对 durable spool，意图先落盘；真实操作需要进程本已具备管理员上下文，程序不请求 UAC、不 sudo 提权、不绕过认证。请求中的 publicKey 只为公钥，私钥/管理员密码不得上传。
+
+Unix 使用现有账户真实 home、保留 authorized_keys、visudo 候选校验和 owned receipt；Windows 使用现有 LocalUser/SID/实际 profile、常见 OpenSSH 管理员键路径及私有 ACL/receipt。Windows 若显式 grantAdministrator=true 可走本地组授权；revoke 默认不猜组权归属，明确 revokeAdministrator=true 是所有者新的撤权决定，缺此确认或发现后改则 partial。自定义 sshd key 位置并未自动探测，不能假说默认路径必定生效。
+
+两个平台当前均有真实本机/VM隔离 fixture 文件效果与 owned 撤销测试；Windows 账户/组 primitive 是 fixture mock，Unix fixture 非root。未对实际系统 keys/sudoers/groups 运行应用。安装结果 ready 始终 false；每个实际 Agent 还要用自己的公钥和真实通路验证 SSH/非交互管理员能力。receipt/操作日志保留，apply/revoke audit reservation 分动作记录，不因未知结果重复安装。详见 registration-apply.md、windows-registration.md 与 client-access.md。

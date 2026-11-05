@@ -14,6 +14,11 @@ test("normal shared-file CLI read and compare-write records real target hashes o
  let input=JSON.stringify({resourceId:"work",path:"work.txt"});const output:string[]=[],errors:string[]=[];
  const io={readInput:async()=>input,write:(s:string)=>output.push(s),error:(s:string)=>errors.push(s),fetch};
  try{
+  assert.equal(await runFilesCli(["resources"],env,io),0);
+  const discovered=JSON.parse(output.pop()!).receipt;assert.equal(discovered.resources[0].resourceId,"work");
+  input=JSON.stringify({resourceId:"work",path:""});assert.equal(await runFilesCli(["list"],env,io),0);
+  const listing=JSON.parse(output.pop()!).receipt;assert.ok(listing.entries.some((entry:{name:string})=>entry.name==="work.txt"));
+  input=JSON.stringify({resourceId:"work",path:"work.txt"});
   assert.equal(await runFilesCli(["read"],env,io),0);const before=JSON.parse(output[0]).receipt;
   input=JSON.stringify({resourceId:"work",path:"work.txt",text:before.text+"remote reviewed\n",expectedSha256:before.sha256});
   assert.equal(await runFilesCli(["write"],env,io),0);const written=JSON.parse(output[1]).receipt;

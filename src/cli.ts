@@ -19,11 +19,12 @@ import { buildTmuxRelayArgv } from "./session/tmux-relay.ts";
 import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
 
-const help = `Usage: bun src/cli.ts <files read|files write|provision|service CONFIG_JSON|prime-profile ENV_ROOT PRIME_ROOT|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: bun src/cli.ts <files hosts|files resources [HOST]|files list [HOST]|files read [HOST]|files write [HOST]|provision|service CONFIG_JSON|prime-profile ENV_ROOT [PRIME_ROOT]|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
-files: read/write selected work roots; JSON resourceId/path, write also text and
+files: optional HOST selects private ENVINHANDS_SHARED_HOSTS catalog; hosts lists IDs.
+       Discover selected roots, list one directory level, read/write work files; JSON resourceId/path, write also text and
        expectedSha256 (null only creates missing file); signed writes, no blind overwrite.
-provision: explicit local owner-confirmed Unix key/admin apply or revoke JSON stdin;
+provision: explicit local owner-confirmed OS key/admin apply or revoke JSON stdin;
            requires existing administrator context, identity env and durable spool.
 service: starts persistent control service from private absolute JSON config;
          signed mutations required, config/DB preserved on SIGINT/SIGTERM.

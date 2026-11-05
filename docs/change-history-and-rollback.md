@@ -60,3 +60,11 @@
 这些使用既有依赖与共同核心，未变更 Prime 平台、旧 live bus、现有 SSH key/sudoers/firewall。Unix helper 使用 Python 标准库与实际 visudo；隔离 Linux 文件效果测试不等于真实管理员已授权。共享服务新增 access_evidence 表和普通 API audit 记录；新严格服务要求已配置注册声明，旧 direct bearer-only 客户端需升级或显式保留 legacy 非严格模式（其原 actor unknown）。schema 保留，撤回客户端/服务时不要删除记录或重放任务。
 
 此段记录实现演进，不预先承诺尚未返回的真实双向/VM完整结果。完整阶段 commit/push 与实际结果以最终回执更新，配置/DB/凭据与代码回退分开。
+
+## `21d7831` 后：实际 VM Prime、资源发现与原生 Windows 注册
+
+`21d7831` 已 push 并核完整 SHA；Windows202pass/typecheck0，精确164文件 Linux201pass/1skip/typecheck0（可选外部Prime直接导入skip）。两主机互改内容已闭合；后续又在 Debian 真正启动完整 Prime source CLI/daemon/session，三轮 Agent 工具读取/修改/读回 Windows 文件。零费用 scripted provider 与之前真模型 CTF 分开，最终 Windows216bytes/SHA b97c594d...a4b97 独立磁盘与实际 session 记录一致。原480文件 Prime export 原锁Linux安装，未构建或改锁；29条漏洞报告是未修的上游/原锁风险，不能拿安装成功掩盖。
+
+本轮继续补共享 resource ID 与当前层目录发现（最多100/hasMore/noabsolute）、私有多主机host catalog（只输出hostId），普通 CLI/Prime一次session选择两个主机无需切环境。Windows native确认apply/ownedrevoke/ACL/explicit新撤权决定在隔离fixture实际测试；真实账户/组/sshd未动，仍不能说实际admin已验证。provision审计按action+operation分离reservation，grant与revoke能各记一次而不会把revoke误当重复grant。
+
+目录发现是新增只读路由，旧158运行服务不支持；新独立Windows浏览服务实际可用，不伪称旧服务已热升级。host catalog及配置/ACL有凭据，不提交；撤回此轮客户端时保留配置引用和审计/receipt，不以删除记录恢复重试。Windows helper落地不隐含真实应用批准。

@@ -61,7 +61,7 @@ explicit records and must not be rewritten as historical automatic coverage.
 ## Shared work on another host
 
 A host service can expose explicit `sharedRoots`, never an entire home by default.
-Normal tools `envinhands_read_shared_file` and `envinhands_write_shared_file` use
+Normal tools `envinhands_list_shared_resources` / `envinhands_list_shared_files` discover resource IDs and current-layer file names without exposing absolute roots. `envinhands_read_shared_file` and `envinhands_write_shared_file` use
 that configured service's resource ID and relative file path. Read returns text
 and SHA256. Write requires that expected SHA256; null only creates a missing
 file. A stale hash yields a conflict, not an overwrite. See [shared-files.md](shared-files.md)
@@ -75,3 +75,21 @@ Known local edit observations now also carry readable before/after file hashes;
 unknown tools do not pretend to identify all side effects.
 
 The Env-owned collaboration adapter uses actual lifecycle context for each heartbeat and tool. It does not currently start a 30-second timer; lifecycle observations are not continuous liveness. Previous seven/nine-path profile reports remain historical snapshots, not the final configuration.
+
+## Several hosts in one Agent session
+
+`ENVINHANDS_SHARED_HOSTS` may reference a private absolute JSON file with
+`{hosts:[{hostId,url,token}]}`. Entries are operator-controlled HTTPS or approved
+loopback origins. Tokens stay in that protected file; Unix requires owner0600,
+Windows requires an equivalent private ACL. `envinhands_list_shared_hosts` returns
+only IDs. Shared-resource, directory, read and write tools then accept `hostId`,
+so one real Agent session can select Windows or Debian without changing its
+environment or taking endpoints from remote messages. `files hosts` and
+`files resources|list|read|write HOST_ID` provide the same convenience to ordinary
+clients. Without a catalog, the existing single ENVINHANDS_URL/TOKEN path remains.
+
+Actual Prime loader/runner/tool verification used one session to read distinct
+Windows and Debian work contents by configured host IDs. It made no model calls
+and did not switch endpoint environment between hosts. Per-tool write attribution
+still binds the actual executing session; a catalog does not grant administrator
+access or make every filesystem path shared.

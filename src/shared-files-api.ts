@@ -1,4 +1,4 @@
-import { createSharedFiles, parseSharedFileLocation, parseSharedFileWrite, SharedFileError } from "./shared-files.ts";
+import { createSharedFiles, parseSharedFileLocation, parseSharedDirectoryLocation, parseSharedFileWrite, SharedFileError } from "./shared-files.ts";
 import { bearerAuth, response } from "./http.ts";
 export const SHARED_FILE_REQUEST_MAX_BYTES = 68 * 1024;
 async function requestBody(request: Request): Promise<unknown> {
@@ -22,7 +22,19 @@ export function createSharedFilesApi(options: { roots: Record<string, string>; t
       try {
         if (closed) return response(503, { error: "Shared files closed" });
         if (!authorized(request)) return response(401, { error: "Unauthorized" });
-        const url = new URL(request.url); if (url.pathname !== "/v1/shared-files") return response(404, { error: "Not found" });
+        const url = new URL(request.url);
+        if (url.pathname === "/v1/shared-resources") {
+          if (request.method !== "GET") return response(405, { error: "Method not allowed" }, { allow: "GET" });
+          if (url.search) throw new SharedFileError(400, "Unexpected query");
+          return response(200, files.listResources());
+        }
+        if (url.pathname === "/v1/shared-files/list") {
+          if (request.method !== "GET") return response(405, { error: "Method not allowed" }, { allow: "GET" });
+          if ([...url.searchParams.keys()].some(key => !["resourceId", "path"].includes(key)) || url.searchParams.getAll("resourceId").length !== 1 || url.searchParams.getAll("path").length > 1) throw new SharedFileError(400, "Expected shared directory resource and path");
+          const { resourceId, path } = parseSharedDirectoryLocation(url.searchParams.get("resourceId"), url.searchParams.get("path") ?? "");
+          return response(200, await files.list(resourceId, path));
+        }
+        if (url.pathname !== "/v1/shared-files") return response(404, { error: "Not found" });
         if (request.method === "GET") {
           if ([...url.searchParams.keys()].some(key => !["resourceId", "path"].includes(key)) || url.searchParams.getAll("resourceId").length !== 1 || url.searchParams.getAll("path").length !== 1) throw new SharedFileError(400, "Expected shared resource and path");
           const { resourceId, path } = parseSharedFileLocation(url.searchParams.get("resourceId"), url.searchParams.get("path"));

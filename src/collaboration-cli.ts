@@ -1,4 +1,4 @@
-import {signedCliFetch} from "./cli-registration.ts";
+import {signedCliFetch,cliRegistration} from "./cli-registration.ts";
 import { CollaborationClient } from "./collaboration-client.ts";
 import type { ChangeCliIO } from "./change-cli.ts";
 
@@ -19,6 +19,11 @@ export async function runCollaborationCli(args: string[], env: NodeJS.ProcessEnv
       const parsed = JSON.parse(input);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
       value = parsed;
+    }
+    if (["heartbeat", "send", "add-note"].includes(command)) {
+      const actor = cliRegistration(env);
+      if ((command === "heartbeat" && (value.agentId !== actor.agentId || value.machineId !== actor.machineId)) ||
+          (command === "send" && value.from !== actor.agentId) || (command === "add-note" && value.author !== actor.agentId)) throw new Error();
     }
     let receipt: unknown;
     const exact = (allowed: string[]) => { if (Object.keys(value).some(k => !allowed.includes(k))) throw new Error(); };

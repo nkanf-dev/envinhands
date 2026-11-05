@@ -11,10 +11,14 @@ test("Prime shared-work tools read and change real selected files using actual s
  const root=await mkdtemp(join(tmpdir(),"prime-shared-"));await writeFile(join(root,"work.txt"),"shared original");
  const server=startAgentBusServer({dbPath:join(root,"db.sqlite"),token:"prime-shared-test",hostname:"127.0.0.1",port:0,requireSignedMutations:true,sharedRoots:{work:root}});
  const values={ENVINHANDS_URL:server.url,ENVINHANDS_TOKEN:"prime-shared-test",ENVINHANDS_AGENT_ID:"file-agent",ENVINHANDS_MACHINE_ID:"client",ENVINHANDS_AUDIT_SIGNATURE:"File agent"};
- const previous=Object.fromEntries(Object.keys(values).map(k=>[k,process.env[k]]));Object.assign(process.env,values);
+ const previous=Object.fromEntries([...Object.keys(values),"ENVINHANDS_SHARED_HOSTS"].map(k=>[k,process.env[k]]));Object.assign(process.env,values);delete process.env.ENVINHANDS_SHARED_HOSTS;
  const tools=new Map<string,Parameters<Parameters<typeof extension>[0]["registerTool"]>[0]>();
  try{
   extension({registerTool:tool=>tools.set(tool.name,tool)});const ctx={sessionManager:{getSessionId:()=>"real-fixture-session"}};
+  const resources=await tools.get("envinhands_list_shared_resources")!.execute("resources",{},undefined,undefined,ctx);
+  assert.ok(resources.content[0].text.includes('"resourceId":"work"'));
+  const files=await tools.get("envinhands_list_shared_files")!.execute("files",{resourceId:"work"},undefined,undefined,ctx);
+  assert.ok(files.content[0].text.includes('"name":"work.txt"'));
   const read=await tools.get("envinhands_read_shared_file")!.execute("read",{resourceId:"work",path:"work.txt"},undefined,undefined,ctx);
   const receipt=JSON.parse(read.content[0].text.split("\n")[1]);assert.equal(receipt.text,"shared original");
   const dispose=installPrimeTransport({baseUrl:server.url,registration:()=>({registrationId:"unrelated-global",agentId:"other-agent",machineId:"client",sessionId:"other-global-session",signature:"Other session"})});

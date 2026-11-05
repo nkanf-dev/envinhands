@@ -42,3 +42,27 @@ test("shared roots reject traversal and symlink escape, with authentication and 
     const wrong=new SharedFilesClient({baseUrl,token:"wrong-token",fetch});await assert.rejects(wrong.read("project","missing.txt"),error=>(error as {status?:number}).status===401);
   }finally{await server.stop(true);api.close();await rm(dir,{recursive:true,force:true});}
 });
+
+
+test("discover configured resource IDs and one-level directory content without exposing host roots", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "env-shared-discovery-")), root = join(dir,"shared"), outside = join(dir,"outside"), token = randomBytes(32).toString("hex");
+  await mkdir(root); await mkdir(outside); await mkdir(join(root,"nested")); await writeFile(join(root,"readme.txt"),"visible work"); await writeFile(join(root,"nested","child.txt"),"child");
+  await symlink(outside,join(root,"escape"),process.platform==="win32"?"junction":"dir");
+  const api=createSharedFilesApi({roots:{team:root},token});const server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:api.fetch});
+  try{
+    const baseUrl=`http://127.0.0.1:${server.port}`,client=new SharedFilesClient({baseUrl,token,fetch});
+    const resources=await client.listResources();assert.deepEqual(resources,{resources:[{resourceId:"team",kind:"shared-directory",capabilities:["read","comparewrite"]}]});
+    assert.equal(JSON.stringify(resources).includes(root),false);
+    const listing=await client.list("team");assert.equal(listing.path,"");assert.equal(listing.hasMore,false);
+    const entries=new Map(listing.entries.map(entry=>[entry.name,entry]));assert.equal(entries.get("readme.txt")!.type,"file");assert.equal(entries.get("readme.txt")!.bytes,12);assert.ok(entries.get("readme.txt")!.modifiedAt);
+    assert.equal(entries.get("nested")!.type,"directory");assert.equal(entries.get("escape")!.type,"unsupported");assert.equal(entries.get("escape")!.bytes,null);
+    assert.equal(listing.entries.some(entry=>entry.name==="child.txt"),false);assert.equal(JSON.stringify(listing).includes(root),false);
+    assert.deepEqual((await client.list("team","nested")).entries.map(entry=>entry.name),["child.txt"]);
+    await assert.rejects(client.list("team","escape"),error=>(error as {status?:number}).status===403);
+    await assert.rejects(client.list("team","../outside"));
+    const denied=await fetch(baseUrl+"/v1/shared-resources");assert.equal(denied.status,401);await denied.body?.cancel();
+    const large=join(root,"large");await mkdir(large);await Promise.all(Array.from({length:101},(_,i)=>writeFile(join(large,`item-${i}.txt`),"x")));
+    const partial=await client.list("team","large");assert.equal(partial.entries.length,100);assert.equal(partial.hasMore,true);
+    const created=await client.write({resourceId:"team",path:"new.txt",text:"after discovery",expectedSha256:null});assert.equal((await client.read("team","new.txt")).sha256,created.afterSha256);
+  }finally{await server.stop(true);api.close();await rm(dir,{recursive:true,force:true});}
+});

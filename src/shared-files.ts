@@ -2,11 +2,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { open, realpath, lstat, rename, unlink, link } from "node:fs/promises";
+import { open, opendir, realpath, lstat, rename, unlink, link } from "node:fs/promises";
 export const SHARED_FILE_MAX_BYTES = 65536;
 export interface SharedFile { resourceId: string; path: string; text: string; sha256: string }
 export interface SharedFileWrite { resourceId: string; path: string; text: string; expectedSha256: string | null }
 export interface SharedFileWriteReceipt { resourceId: string; path: string; beforeSha256: string | null; afterSha256: string; bytes: number }
+export interface SharedResource { resourceId: string; kind: "shared-directory"; capabilities: ["read", "comparewrite"] }
+export interface SharedDirectoryEntry { name: string; type: "file" | "directory" | "unsupported"; bytes: number | null; modifiedAt: string | null }
+export interface SharedDirectory { resourceId: string; path: string; entries: SharedDirectoryEntry[]; hasMore: boolean }
+export function parseSharedDirectoryLocation(resourceId: unknown, path: unknown): { resourceId: string; path: string } {
+  if (path === "") { parseSharedFileLocation(resourceId, "directory"); return { resourceId: resourceId as string, path }; }
+  return parseSharedFileLocation(resourceId, path);
+}
 export class SharedFileError extends Error { constructor(readonly status: 400 | 403 | 404 | 409 | 413, message: string) { super(message); } }
 const writes = new Map<string, Promise<unknown>>();
 export const sharedFileHash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -59,6 +66,34 @@ export function createSharedFiles(options: { roots: Record<string, string> }) {
     return { root, parent, target: join(parent, path.split("/").at(-1)!) };
   };
   return {
+    listResources(): { resources: SharedResource[] } {
+      return { resources: [...roots.keys()].map(resourceId => ({ resourceId, kind: "shared-directory", capabilities: ["read", "comparewrite"] })) };
+    },
+    async list(resourceId: string, path = ""): Promise<SharedDirectory> {
+      parseSharedDirectoryLocation(resourceId, path);
+      const configured = roots.get(resourceId); if (!configured) throw new SharedFileError(404, "Shared resource not found");
+      const root = await realpath(configured), target = path ? (await locate(resourceId, path)).target : root;
+      let info;
+      try { info = await lstat(target); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new SharedFileError(404, "Shared directory not found"); throw error; }
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new SharedFileError(403, "Shared path is not a regular directory");
+      const directoryPath = await realpath(target);
+      if (!inside(root, directoryPath)) throw new SharedFileError(403, "Shared directory leaves configured root");
+      const entries: SharedDirectoryEntry[] = []; let hasMore = false;
+      const directory = await opendir(directoryPath);
+      try {
+        while (true) {
+          const entry = await directory.read(); if (!entry) break;
+          if (entries.length === 100) { hasMore = true; break; }
+          try {
+            const metadata = await lstat(join(directoryPath, entry.name));
+            const type = metadata.isSymbolicLink() ? "unsupported" : metadata.isFile() ? "file" : metadata.isDirectory() ? "directory" : "unsupported";
+            entries.push({ name: entry.name, type, bytes: type === "file" ? metadata.size : null, modifiedAt: type === "unsupported" ? null : metadata.mtime.toISOString() });
+          } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        }
+      } finally { await directory.close(); }
+      return { resourceId, path, entries, hasMore };
+    },
     async read(resourceId: string, path: string): Promise<SharedFile> {
       const location = await locate(resourceId, path), bytes = await contents(location.target);
       if (bytes === null) throw new SharedFileError(404, "Shared file not found");

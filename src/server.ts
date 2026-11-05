@@ -50,7 +50,7 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
       port: options.port ?? 8787,
       fetch: (request) => mutations.dispatch(request, (request) => {
         const path = new URL(request.url).pathname;
-        if (path === "/v1/shared-files") return sharedFiles.fetch(request);
+        if (path === "/v1/shared-files" || path === "/v1/shared-files/list" || path === "/v1/shared-resources") return sharedFiles.fetch(request);
         if (path === "/v1/access-evidence") return accessEvidence.fetch(request);
         if (path === "/v1/changes" || path === "/v1/agent-registrations") return changes.fetch(request);
         return path === "/v1/machines" || path.startsWith("/v1/machines/") || path.startsWith("/v1/resources/")

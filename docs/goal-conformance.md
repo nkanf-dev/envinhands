@@ -12,7 +12,7 @@
 | 不同用户自主协商，无固定负责人 | 已实测可用 | 三位 Agent 分别受 Windows 静态源只读、VM 动态执行、独立复核要求约束，自主发消息分工；自建获准 CTF 评分 100，全员均有有效工作。E2 | 这是实际模型正常工具循环，但 controller 仍按轮提供继续机会，不是完全无人调度；运行时关闭 skills/内置工具，与 E14/E15 的独立 skills 加载证据不能合并。不承诺任意题或无授权资源。 |
 | 三人六设备与 Intel/AMD 兼容 | 受阻 | Windows x64 与 Debian VM amd64 已运行；Linux 原生采集已核对。E3、E4 | Linux desktop、Intel NAS 实机、三台 Mac、各自网络尚未逐台验收；兼容代码不等于硬件实测。 |
 | 设备元数据登记到管理主机 | 已实测可用 | Windows/Linux 原生信息实际登记，API 与独立 SQLite 读回 pending；device register 共用采集路径，macOS 有映射 fixture。E4、E5 | 这里只是元数据，不称最终“注册成功”。macOS 真机仍缺。 |
-| 所有者确认后的公钥/admin 自动配置与撤销 | 未完成 | 旧 Linux 助手仍为计划；新增 runUnixRegistration/provision 已实现 explicit confirm、现有管理员上下文、owned receipt 的 key/sudoers 应用与撤销。Linux 真 Python/visudo 隔离效果测试通过，真实系统未应用。src/registration/apply.ts | Unix 实际文件效果/部分撤销已测；真实设备仍需所有者授权并以自身身份验 SSH/admin，不能以隔离 fixture 说已配权。Windows provisioning 与 Mac 实机未完成。 |
+| 所有者确认后的公钥/admin 自动配置与撤销 | 未完成 | 旧 Linux 助手仍为计划；新增 runUnixRegistration/provision 已实现 explicit confirm、现有管理员上下文、owned receipt 的 key/sudoers 应用与撤销。Linux 真 Python/visudo 隔离效果测试通过，真实系统未应用。src/registration/apply.ts | Unix 实际文件效果/部分撤销已测；真实设备仍需所有者授权并以自身身份验 SSH/admin，不能以隔离 fixture 说已配权。Windows 原生 helper 也已实现 owner-confirmed apply/owned revoke，真实 NTFS 文件/ACL 的隔离 fixture 通过；组操作只 fixture mock，真实管理员上下文/自定义 sshd 及 Mac 实机仍未验证。 |
 | 每个目标 Agent 自身 SSH 与管理员验证 | 部分完成 | 实际身份/session/route/TTL 客户端检查、严格 host key、真实普通用户 SSH；sudo 不足正确 not-ready。E6 | 不能用服务端身份替代其他 Agent。指定身份逐一授权、正向 admin 验证未完成；当前 VM sudo -n 失败。sshIdentityRef 已改实际 OpenSSH 公钥 SHA256，前后指纹变化不 ready；服务持久 /v1/access-evidence 按注册/session/target/route/key/user 保存声明观察，latest 负向盖旧正向，不升全局 machine ready。正向管理员实测仍缺。 |
 | Windows 实际 SSH 管理员令牌 | 受阻 | 固定命令检查有效令牌的代码和 mock 通过，非仅检查组成员。test/windows-readiness.test.ts | 需获准 Windows SSH 会话与真实管理员身份；尚未实测。 |
 | NAT 主动出站目标与受控 relay SSH 通路 | 部分完成 | Windows 编译 proxy→加密承载→VM relay/node→同 VM 真实 sshd，错误 secret/host key 拒绝；受控字节通路实测成功。E7 | 还不是独立 NAT 站点仅出站接入共同外部入口；异地、多故障域、入口断开与恢复未闭合。 |
@@ -57,9 +57,13 @@
 - **E17**：主控 cross-host-work-20261105T202717Z/ 与 vm-completion-20261105T202907Z/FORMAL-SERVICE-CROSSHOST-DELIVERY.md、windows-to-vm-independent-disk-audit.log：Debian→Windows 最终 dd4f3413...fcac，Windows→Debian 初次48b0fc4e...d36a，两端实际磁盘核对；actual-prime-sdk-cross-host-shared-work-first：真实SDK追加后1e5958c8...a660，最后独立VM磁盘170bytes与该SHA一致，实际SDKsession署名记录前后hash核对exit0。158文件源码冻结并非已commit；后加Prime adapter不冒称在VM158suite内。
 - **E18**：主控 signed-strict-cli-no-model-result、strict-three-cli-audit-readback：3真实CLI PIDs11920/35464/28832，零付费provider处理消息/经验/签名；独立DB161records中三者均有API+工具观察。Unix lease UNIX-APPLY-DELIVERY.md、formal服务两PID重启和ACCESS-EVIDENCE-DELIVERY.md各自保留首失败。
 
+- **E19**：prime-agent-resume-20261105T173812935010Z/vm-prime-cli-deployment/ACTUAL-VM-PRIME-CLI-DELIVERY.md：真实 Debian Prime CLI PID6213/session01a1ad7a-c576-7253-83c3-640685801078，三 actual prompt/Agent/tool/agent_end 完成 Windows 工作 read/write/readback；独立 Windows 磁盘216bytes/SHA b97c594d...a4b97 和服务实际 session 署名核对。零费用 scripted provider，不是新真实模型智能证明。Node/npm原锁453包，10manifest/lock不变；原锁npm报告29漏洞未处理，不称生产安全通过。系统Python无rlm，本任务未调用Python，不假REPL可用。
+- **E20**：实际一 Prime SDK session01a1ad7c-5091-70d7-b1c1-3a76abb39a4e通过私有host catalog选择 Windows/Debian，读不同内容，无环境endpoint切换；actual-prime-one-session-two-host-selection.raw.log。目录API/CLI/工具发现的普通fixture通过，actual updated Windows服务catalog/list/read通过；跨机新端点实际 Debian→Windows listResources→list→按发现entry读取通过，216bytes/hasMorefalse/绝对root不暴露，原Windows磁盘不变；DEBIAN-WINDOWS-READONLY-DISCOVERY.md / debian-discovers-windows-38963-first exit0。
+- **E21**：windows-registration-20261105T204730Z/WINDOWS-REGISTRATION-DELIVERY.md：原生Windows fixture真实文件/ACL/保留原keys/撤销2pass27expect，组/账户模拟且未真实配权，明确二次revokeAdministrator同意才撤本operation尝试范围，缺同意partial。首失败与修复独立保留；当前用户effectiveadminfalse，无UAC/提权。
+
 ## 推送后复核结论
 
-原目标未全部符合。可确认真实 Prime→VM 的协作/授权普通用户工作正常；不能把 pending 设备等同注册最终成功。独立复核所指的 Unix 应用/撤销、实际公钥身份+持久观察、direct CLI/API署名与正式服务重启已继续实现并实测其受控范围；不能把这一批新结果倒写为旧版已完成。仍有 Windows provisioning、工具外修改边界、实际管理员正向、整体系生产恢复及永久服务等缺口。真实六设备、每身份管理员正向与两实际地点/两个可用入口还需获准环境。正常 profile 与相对 edit 定位是本次独立审查后完成的具体修复，不倒写此前模型报告。
+原目标未全部符合。可确认真实 Prime→VM 的协作/授权普通用户工作正常；不能把 pending 设备等同注册最终成功。独立复核所指的 Unix 应用/撤销、实际公钥身份+持久观察、direct CLI/API署名与正式服务重启已继续实现并实测其受控范围；不能把这一批新结果倒写为旧版已完成。仍有 Windows 真实管理员应用/SSH令牌正向、工具外修改边界、实际管理员正向、整体系生产恢复及永久服务等缺口。真实六设备、每身份管理员正向与两实际地点/两个可用入口还需获准环境。正常 profile 与相对 edit 定位是本次独立审查后完成的具体修复，不倒写此前模型报告。
 
 下一步优先：1）新版本独立副本按正常配置复现并持久保管其服务/配置/数据引用，另行协调 live 升级；2）确认各设备、Agent 公钥身份及管理员授权清单，完成相应开发与实际验证；3）在已有共同加密入口下开展两实际地点正常工作、署名同步、一次自有断线后的新连接回退/结果核对。不要用重复付费 CTF 或增加泛化矩阵替代这些工作。
 

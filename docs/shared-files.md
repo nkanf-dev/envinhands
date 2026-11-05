@@ -6,6 +6,34 @@ host's approved HTTPS or encrypted loopback-forward origin. Root server/config/
 CLI integration supplies the service lifetime and signed mutation audit. This
 module does not make arbitrary system paths or commands accessible.
 
+## Shared resource and directory discovery
+
+GET `/v1/shared-resources` returns
+`{resources:[{resourceId,kind:"shared-directory",capabilities:["read","comparewrite"]}]}`.
+It lists configured resource IDs only, never the host's absolute root directory.
+It describes configured capability, not a live probe of directory availability or
+an administrator grant. `client.listResources()` reads this catalog.
+
+GET `/v1/shared-files/list?resourceId=project&path=` lists the selected root;
+path may be omitted/empty for this endpoint only. `client.list(resourceId,path="")`
+returns `{resourceId,path,entries,hasMore}`. Entries contain only
+`{name,type,bytes,modifiedAt}`. Type is file, directory or unsupported; file bytes
+is its size, directory/unsupported bytes is null. Symlinks are not followed and
+are marked unsupported with null metadata. Navigating a symlink directory is
+refused, including a junction that escapes the configured root. Nested files
+are not returned until the caller explicitly lists that subdirectory.
+
+Directory reading uses `opendir` and inspects at most the current first100 entries
+plus one lookahead to determine `hasMore`. Enumeration order is filesystem order,
+not a stable sorted listing. `hasMore:true` means the result is incomplete; this
+release has no cursor or recursive scan. Split/narrow the shared work directory
+or select known subdirectories rather than treating100 entries as the full tree.
+No depth parameter is accepted. Names/types/sizes/times are untrusted observations,
+not commands or permission to modify. No absolute directory paths are returned.
+All discovery routes require the same bearer and are read-only. Root server,
+CLI and Prime integration mount these endpoints; this module does not change
+those host entrypoints or running services.
+
 ## Core and HTTP interface
 
 `createSharedFiles({roots})` returns `read(resourceId,path)` and `write(input)`.
@@ -91,10 +119,12 @@ already accepted writes and stopping listeners.
 instances, actual files and independent disk readback. It covers create/read/
 expected-update/stale conflict/create-only conflict, competing same-hash writers,
 64KiB file/BOM, authentication, missing files, traversal and a real Windows
-junction/POSIX directory symlink escaping the allowed root. It uses no model,
+junction/POSIX directory symlink escaping the allowed root. Discovery fixtures
+also check metadata-only roots, one-level listings, nested navigation,
+unsupported symlinks and101 files yielding100 entries with explicit hasMore. It uses no model,
 real keys or existing user files.
 
 The main coordinator separately runs a Windows root and a Debian VM root over
 approved encrypted routes for real bidirectional sharing/modification/work.
-Local two-client fixture passes are not proof of that cross-host deployment,
+Local discovery/two-client fixture passes are not proof of that cross-host deployment,
 SSH/admin readiness, arbitrary NAT traversal, all six devices or OS isolation.

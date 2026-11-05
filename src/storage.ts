@@ -6,6 +6,7 @@ import type { Machine, ResourceMessage } from "./control.ts";
 /** Readiness is a point-in-time check using the server's configured SSH identity. */
 export interface StoredMachine extends Machine {
   sshUser: string | null;
+  relayNodeId: string | null;
   status: "pending" | "ready" | "not-ready";
   verifiedAt: string | null;
   checkedAt: string | null;
@@ -19,6 +20,7 @@ export interface RegisterMachine {
   os: string;
   sshPort?: number;
   sshUser: string;
+  relayNodeId?: string;
 }
 
 const ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
@@ -70,6 +72,7 @@ export class Storage {
         for (const [name, definition] of [
           ["sshUser", "TEXT"], ["status", "TEXT NOT NULL DEFAULT 'not-ready'"],
           ["verifiedAt", "TEXT"], ["checkedAt", "TEXT"], ["verificationToken", "TEXT"],
+          ["relayNodeId", "TEXT"],
         ]) {
           if (!columns.has(name)) db.exec(`ALTER TABLE machines ADD COLUMN ${name} ${definition}`);
         }
@@ -114,9 +117,10 @@ export class Storage {
     if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(sshUser)) throw new Error("Invalid sshUser");
     const sshPort = input.sshPort === undefined ? 22 : input.sshPort;
     if (!Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65535) throw new Error("Invalid sshPort");
+    const relayNodeId = input.relayNodeId === undefined ? null : identifier(input.relayNodeId, "relayNodeId");
     const registeredAt = new Date().toISOString();
-    this.db.query(`INSERT INTO machines (id, name, host, os, sshPort, sshUser, registeredAt, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`).run(id, name, host, os, sshPort, sshUser, registeredAt);
+    this.db.query(`INSERT INTO machines (id, name, host, os, sshPort, sshUser, relayNodeId, registeredAt, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`).run(id, name, host, os, sshPort, sshUser, relayNodeId, registeredAt);
     return this.getMachine(id)!;
   }
 

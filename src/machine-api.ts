@@ -99,8 +99,9 @@ export function createMachineApi({ dbPath, token, readinessTtlMs, verifier = che
           }
           if (req.method !== "POST") return method("GET, POST");
           const data = await json(req);
-          fields(data, ["id", "name", "host", "os", "sshPort", "sshUser"]);
+          fields(data, ["id", "name", "host", "os", "sshPort", "sshUser", "relayNodeId"]);
           const machineId = id(data.id, "id");
+          const relayNodeId = data.relayNodeId === undefined ? undefined : id(data.relayNodeId, "relayNodeId");
           const name = text(data.name, "name", 200);
           const host = text(data.host, "host", 253);
           const os = text(data.os, "os", 100);
@@ -108,7 +109,7 @@ export function createMachineApi({ dbPath, token, readinessTtlMs, verifier = che
           if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(sshUser)) throw new HttpError(400, "Invalid sshUser");
           const sshPort = data.sshPort === undefined ? 22 : data.sshPort;
           if (typeof sshPort !== "number" || !Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65535) throw new HttpError(400, "Invalid sshPort");
-          try { return reply(202, { machine: storage.registerMachine({ id: machineId, name, host, os, sshPort, sshUser }) }); }
+          try { return reply(202, { machine: storage.registerMachine({ id: machineId, name, host, os, sshPort, sshUser, relayNodeId }) }); }
           catch (error) {
             // Insert is atomic; identify a uniqueness conflict even with concurrent writers.
             if (error && typeof error === "object" && "code" in error && typeof error.code === "string" && error.code.startsWith("SQLITE_CONSTRAINT") && storage.getMachine(machineId)) throw new HttpError(409, "Machine already exists");
@@ -126,8 +127,9 @@ export function createMachineApi({ dbPath, token, readinessTtlMs, verifier = che
           let ready = false;
           try {
             // Unsupported OS and legacy records must fail closed, even with an injected verifier.
-            if (target.sshUser && ["linux", "macos"].includes(target.os.toLowerCase())) {
-              const result = await verifier({ host: target.host, user: target.sshUser, os: target.os, sshPort: target.sshPort });
+            if (target.sshUser && ["linux", "macos", "windows"].includes(target.os.toLowerCase())) {
+              const result = await verifier({ host: target.host, user: target.sshUser, os: target.os, sshPort: target.sshPort,
+                ...(target.relayNodeId == null ? {} : { relayNodeId: target.relayNodeId }) });
               ready = result?.ready === true && result.status === "ready";
             }
           } catch { /* A verifier error is not proof of readiness. */ }

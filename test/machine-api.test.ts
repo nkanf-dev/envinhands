@@ -62,6 +62,36 @@ describe("persistent machine API (direct fetch, no network)", () => {
     expect((await json(await call(again, "/v1/resources/other/messages"))).messages).toEqual([]);
     again.close();
   });
+  test("optional relay node ID is validated and persists across restart", async () => {
+    const targets: ReadinessTarget[] = [];
+    const { dbPath, api } = setup(async target => { targets.push(target); return ready; });
+    const nodeId = "relay_1.node-2";
+    try {
+      const response = await call(api, "/v1/machines", "POST", { ...input, relayNodeId: nodeId });
+      expect(response.status).toBe(202);
+      expect((await json(response)).machine.relayNodeId).toBe(nodeId);
+      expect((await json(await call(api, "/v1/machines?includePending=true"))).machines[0].relayNodeId).toBe(nodeId);
+      for (const value of [null, "", ".node", "bad/id", "bad id", "x".repeat(129), 123, [], {}]) {
+        const invalid = await call(api, "/v1/machines", "POST", { ...input, id: "invalid", relayNodeId: value });
+        expect(invalid.status).toBe(400);
+        expect(await invalid.json()).toEqual({ error: "Invalid relayNodeId" });
+      }
+      const withoutNode = await call(api, "/v1/machines", "POST", { ...input, id: "no-node" });
+      expect(withoutNode.status).toBe(202);
+      expect((await json(withoutNode)).machine.relayNodeId).toBeNull();
+      expect((await call(api, "/v1/machines/host-1/verify", "POST")).status).toBe(200);
+      expect((await call(api, "/v1/machines/no-node/verify", "POST")).status).toBe(200);
+      expect(targets).toEqual([
+        { host: input.host, user: input.sshUser, os: input.os, sshPort: 22, relayNodeId: nodeId },
+        { host: input.host, user: input.sshUser, os: input.os, sshPort: 22 },
+      ]);
+    } finally { api.close(); }
+    const again = createMachineApi({ dbPath, token: "secret", verifier: async () => ready });
+    try {
+      const machines = (await json(await call(again, "/v1/machines?includePending=true"))).machines;
+      expect(machines.map(machine => [machine.id, machine.relayNodeId])).toEqual([[input.id, nodeId], ["no-node", null]]);
+    } finally { again.close(); }
+  });
   test("authentication is required before reads and writes", async () => {
     const { api } = setup();
     for (const [path, method, value] of [["/v1/machines", "GET", undefined], ["/v1/machines", "POST", input], ["/v1/machines/host-1/heartbeat", "POST", undefined], ["/v1/machines/host-1/verify", "POST", undefined], ["/v1/resources/r/messages", "GET", undefined], ["/v1/resources/r/messages", "POST", {author: "a", text: "b"}]] as const) {
@@ -133,6 +163,80 @@ describe("readiness gate", () => {
     } finally { api.close(); }
   });
 
+  test("Windows verification forwards the registered target, including an optional relay", async () => {
+    const targets: ReadinessTarget[] = [];
+    const { api } = setup(async target => { targets.push(target); return ready; });
+    try {
+      const windows = { ...input, id: "win-relay", os: "WiNdOwS", sshPort: 2222, relayNodeId: "relay-1" };
+      const direct = { ...input, id: "win-direct", os: "windows" };
+      for (const machine of [windows, direct]) {
+        const registered = await call(api, "/v1/machines", "POST", machine);
+        expect(registered.status).toBe(202);
+        expect((await json(registered)).machine.status).toBe("pending");
+        const response = await call(api, `/v1/machines/${machine.id}/verify`, "POST");
+        expect(response.status).toBe(200);
+        const verified = (await json(response)).machine;
+        expect(verified.status).toBe("ready");
+        expect(Number.isFinite(Date.parse(verified.verifiedAt ?? ""))).toBe(true);
+      }
+      expect(targets).toEqual([
+        { host: windows.host, user: windows.sshUser, os: "WiNdOwS", sshPort: 2222, relayNodeId: "relay-1" },
+        { host: direct.host, user: direct.sshUser, os: "windows", sshPort: 22 },
+      ]);
+      const visible = (await json(await call(api, "/v1/machines"))).machines;
+      expect(visible.map(machine => machine.id)).toEqual([windows.id, direct.id]);
+    } finally { api.close(); }
+  });
+
+  test("Windows verification fails closed on verifier failures and clears prior readiness", async () => {
+    const results: Array<ReadinessResult | Error> = [
+      ready,
+      { status: "not-ready", ready: false, message: "not administrator" },
+      { status: "unsupported", ready: false, message: "unavailable" },
+      { status: "ready", ready: false, message: "inconsistent" } as unknown as ReadinessResult,
+      { status: "not-ready", ready: true, message: "inconsistent" } as unknown as ReadinessResult,
+      new Error("secret verifier detail"),
+    ];
+    let attempts = 0;
+    const { api } = setup(async () => {
+      const result = results[attempts++];
+      if (result instanceof Error) throw result;
+      return result;
+    });
+    try {
+      expect((await call(api, "/v1/machines", "POST", { ...input, os: "windows" })).status).toBe(202);
+      expect((await json(await call(api, "/v1/machines/host-1/verify", "POST"))).machine.status).toBe("ready");
+      expect((await json(await call(api, "/v1/machines"))).machines).toHaveLength(1);
+      for (let i = 1; i < results.length; i++) {
+        const response = await call(api, "/v1/machines/host-1/verify", "POST");
+        expect(response.status).toBe(200);
+        const text = await response.text();
+        expect(text).not.toContain("secret verifier detail");
+        const machine = JSON.parse(text).machine as StoredMachine;
+        expect(machine.status).toBe("not-ready");
+        expect(machine.verifiedAt).toBeNull();
+        expect(Number.isFinite(Date.parse(machine.checkedAt ?? ""))).toBe(true);
+        expect((await json(await call(api, "/v1/machines?includePending=true"))).machines).toEqual([]);
+      }
+      expect(attempts).toBe(results.length);
+    } finally { api.close(); }
+  });
+
+  test("unknown OS cannot become ready even when the verifier would succeed", async () => {
+    let calls = 0;
+    const { api } = setup(async () => { calls++; return ready; });
+    try {
+      expect((await call(api, "/v1/machines", "POST", { ...input, os: "plan9" })).status).toBe(202);
+      const response = await call(api, "/v1/machines/host-1/verify", "POST");
+      expect(response.status).toBe(200);
+      const machine = (await json(response)).machine;
+      expect(machine.status).toBe("not-ready");
+      expect(machine.verifiedAt).toBeNull();
+      expect(calls).toBe(0);
+      expect((await json(await call(api, "/v1/machines?includePending=true"))).machines).toEqual([]);
+    } finally { api.close(); }
+  });
+
   test("expired readiness is not visible until verification succeeds again", async () => {
     const { api, dbPath } = setup();
     try {
@@ -161,8 +265,8 @@ test("verifier errors and unsupported operating systems fail closed", async () =
     const text = await result.text();
     expect(text).not.toContain("secret verifier detail");
     expect(JSON.parse(text).machine.status).toBe("not-ready");
-    await call(api, "/v1/machines", "POST", { ...input, id: "win", os: "windows" });
-    const unsupported = await call(api, "/v1/machines/win/verify", "POST");
+    await call(api, "/v1/machines", "POST", { ...input, id: "unknown", os: "plan9" });
+    const unsupported = await call(api, "/v1/machines/unknown/verify", "POST");
     expect(unsupported.status).toBe(200);
     expect((await json(unsupported)).machine.status).toBe("not-ready");
     expect(count).toBe(1);

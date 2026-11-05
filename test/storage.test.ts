@@ -19,6 +19,7 @@ test("machines, heartbeat, and messages survive close and reopen", () => {
     assert.equal(machine.lastHeartbeatAt, null);
     assert.equal(machine.status, "pending");
     assert.equal(machine.sshUser, "admin");
+    assert.equal(machine.relayNodeId, null);
     assert.equal(machine.verifiedAt, null);
     assert.ok(!Number.isNaN(Date.parse(machine.registeredAt)));
     const heartbeat = store.recordHeartbeat("nas");
@@ -63,6 +64,9 @@ test("invalid inputs, duplicate ids, missing machines and closed storage fail", 
     assert.throws(() => store.registerMachine({ ...registration, host: "x".repeat(254) }), /Invalid host/);
     assert.throws(() => store.registerMachine({ ...registration, sshPort: 0 }), /Invalid sshPort/);
     assert.throws(() => store.registerMachine({ ...registration, sshPort: 22.5 }), /Invalid sshPort/);
+    for (const relayNodeId of ["", "bad/id", ".bad", "a".repeat(129), null, 42]) {
+      assert.throws(() => store.registerMachine({ ...registration, relayNodeId } as never), /Invalid relayNodeId/);
+    }
     store.registerMachine(registration);
     assert.throws(() => store.registerMachine(registration));
     assert.equal(store.getMachine("missing"), null);
@@ -132,6 +136,7 @@ test("legacy database migrates without granting readiness or losing data", () =>
     assert.ok(legacy);
     assert.equal(legacy.status, "not-ready");
     assert.equal(legacy.sshUser, null);
+    assert.equal(legacy.relayNodeId, null);
     assert.equal(legacy.verifiedAt, null);
     assert.equal(legacy.name, "Legacy");
     assert.equal(store.listMessages("old")[0].text, "hello");
@@ -139,5 +144,47 @@ test("legacy database migrates without granting readiness or losing data", () =>
     store = Storage.open(path);
     assert.deepEqual(store.getMachine("old"), legacy);
     assert.equal(store.listMessages("old").length, 1);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test("relay node id survives registration, updates, and reopen", () => {
+  const dir = mkdtempSync(join(tmpdir(), "envinhands-relay-storage-"));
+  const path = join(dir, "state.sqlite");
+  let store = Storage.open(path);
+  try {
+    const nodeId = "node_1.example";
+    assert.equal(store.registerMachine({ ...registration, relayNodeId: nodeId }).relayNodeId, nodeId);
+    assert.equal(store.recordHeartbeat("nas").relayNodeId, nodeId);
+    const token = store.beginVerification("nas");
+    assert.equal(store.recordVerification("nas", true, token).relayNodeId, nodeId);
+    store.close();
+    store = Storage.open(path);
+    assert.equal(store.getMachine("nas")?.relayNodeId, nodeId);
+    assert.equal(store.listMachines()[0].relayNodeId, nodeId);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("existing readiness schema migrates without losing state", () => {
+  const dir = mkdtempSync(join(tmpdir(), "envinhands-relay-migration-"));
+  const path = join(dir, "state.sqlite");
+  const db = new Database(path);
+  db.exec(`CREATE TABLE machines (
+    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, host TEXT NOT NULL, os TEXT NOT NULL,
+    sshPort INTEGER NOT NULL, registeredAt TEXT NOT NULL, lastHeartbeatAt TEXT,
+    sshUser TEXT, status TEXT NOT NULL DEFAULT 'not-ready', verifiedAt TEXT, checkedAt TEXT, verificationToken TEXT
+  );
+  INSERT INTO machines VALUES ('old', 'Old', 'old.local', 'Linux', 22, '2020-01-01', NULL,
+    'admin', 'pending', NULL, NULL, 'old-token');`);
+  db.close();
+  let store = Storage.open(path);
+  try {
+    assert.equal(store.getMachine("old")?.relayNodeId, null);
+    assert.equal(store.getMachine("old")?.status, "pending");
+    assert.equal(store.recordVerification("old", true, "old-token").status, "ready");
+    store.close();
+    store = Storage.open(path);
+    assert.equal(store.getMachine("old")?.relayNodeId, null);
+    assert.equal(store.getMachine("old")?.status, "ready");
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

@@ -6,12 +6,17 @@
  */
 import { spawn } from "node:child_process";
 import { isIP } from "node:net";
+import { constants } from "node:fs";
+import { access, stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
+import { checkWindowsAdminReadiness } from "./windows-readiness.ts";
 
 export interface ReadinessTarget {
   host: string;
   user: string;
   os: string;
   sshPort?: number;
+  relayNodeId?: string;
 }
 
 export type ReadinessResult =
@@ -57,6 +62,27 @@ function validHost(host: unknown): host is string {
     /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(part));
 }
 
+// OpenSSH expands percent tokens in ProxyCommand before the shell sees quoting.
+// Reject percent in the binary path, even inside single quotes.
+export async function relayProxy(nodeId: unknown): Promise<string | undefined> {
+  if (process.platform === "win32" || typeof nodeId !== "string" ||
+      !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(nodeId)) return undefined;
+  const binary = process.env.ENVINHANDS_PROXY_BINARY;
+  const relayUrl = process.env.ENVINHANDS_RELAY_URL;
+  const secret = process.env.ENVINHANDS_RELAY_SECRET;
+  if (!binary || !isAbsolute(binary) || /[%\x00-\x1f\x7f]/.test(binary) ||
+      !relayUrl || /[\r\n\x00]/.test(relayUrl) || !secret || /[\r\n\x00]/.test(secret)) return undefined;
+  try {
+    const url = new URL(relayUrl);
+    if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) return undefined;
+    if (!(await stat(binary)).isFile()) return undefined;
+    await access(binary, constants.X_OK);
+  } catch { return undefined; }
+  // One POSIX shell word, including when the path contains a quote or spaces.
+  const quoted = `'${binary.replace(/'/g, "'\\''")}'`;
+  return `ProxyCommand=exec ${quoted} proxy ${nodeId}`;
+}
+
 /**
  * Use the local SSH client's normal known-hosts files, with strict checking.
  * Unknown or changed host keys fail; this function never accepts them. The
@@ -66,16 +92,21 @@ function validHost(host: unknown): host is string {
 export async function checkAdminReadiness(target: ReadinessTarget, runner: CommandRunner = runCommand): Promise<ReadinessResult> {
   if (!target || typeof target.os !== "string") return NOT_READY;
   const os = target.os.toLowerCase();
-  if (os === "windows") return { status: "unsupported", ready: false,
-    message: "Windows administrator verification is not implemented; sudo is not a Windows administrator check." };
+  if (os === "windows") return checkWindowsAdminReadiness(target, runner);
   if (os !== "linux" && os !== "macos") return { status: "unsupported", ready: false,
-    message: "Administrator verification is supported only for Linux and macOS." };
+    message: "Administrator verification is supported only for Linux, macOS, and Windows." };
   const port = target.sshPort === undefined ? 22 : target.sshPort;
   if (!validHost(target.host) || typeof target.user !== "string" ||
       !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(target.user) ||
       !Number.isInteger(port) || port < 1 || port > 65535 || typeof runner !== "function") return NOT_READY;
+  const proxyOptions: string[] = [];
+  if (target.relayNodeId !== undefined) {
+    const proxy = await relayProxy(target.relayNodeId);
+    if (!proxy) return NOT_READY;
+    proxyOptions.push("-o", proxy);
+  }
   const args = ["-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-    "-o", "ConnectTimeout=10", "-p", String(port), "-l", target.user, "--", target.host,
+    "-o", "ConnectTimeout=10", ...proxyOptions, "-p", String(port), "-l", target.user, "--", target.host,
     "sudo", "-n", "true"];
   try {
     const result = await runner("ssh", args, TIMEOUT_MS);

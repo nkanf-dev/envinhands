@@ -5,8 +5,8 @@ const secret = "local-test-secret";
 const cleanup: Array<() => void> = [];
 afterEach(() => { while (cleanup.length) cleanup.pop()!(); });
 
-function startRelay(setupTimeoutMs = 1000) {
-  const relay = createRelayServer({ secret, setupTimeoutMs });
+function startRelay(setupTimeoutMs = 1000, limits: Partial<Parameters<typeof createRelayServer>[0]> = {}) {
+  const relay = createRelayServer({ secret, setupTimeoutMs, ...limits });
   cleanup.push(() => relay.stop());
   return { relay, base: `ws://127.0.0.1:${relay.port}` };
 }
@@ -51,6 +51,85 @@ function echo(ws: WebSocket, bytes: Uint8Array): Promise<Uint8Array> {
 }
 
 describe("reverse relay prototype", () => {
+  test("limits node registrations and recovers after close and failed upgrade", async () => {
+    const { base } = startRelay(1000, { maxNodes: 2 });
+    const http = base.replace("ws:", "http:");
+    const headers = { Authorization: `Bearer ${secret}` };
+    // A valid HTTP request without an upgrade must not consume a slot.
+    expect((await fetch(http + "/node?id=bad", { headers })).status).toBe(400);
+    const a = connect(base, "/node?id=a");
+    const b = connect(base, "/node?id=b");
+    expect(await Promise.all([nextText(a), nextText(b)])).toEqual(["registered", "registered"]);
+    expect((await fetch(http + "/node?id=c", { headers })).status).toBe(503);
+    const denied = connect(base, "/node?id=denied");
+    await closed(denied);
+    a.close(); await closed(a);
+    const c = connect(base, "/node?id=c");
+    expect(await nextText(c)).toBe("registered");
+  });
+
+  test("session limit counts pending and active sessions and releases them", async () => {
+    const { base } = startRelay(300, { maxSessions: 1 });
+    const http = base.replace("ws:", "http:");
+    const headers = { Authorization: `Bearer ${secret}` };
+    const control = connect(base, "/node?id=n");
+    await nextText(control);
+    const a = connect(base, "/client?node=n");
+    const request = JSON.parse(await nextText(control));
+    expect((await fetch(http + "/client?node=n", { headers })).status).toBe(503);
+    const denied = connect(base, "/client?node=n");
+    await closed(denied);
+    const channel = connect(base, "/channel?id=" + request.id);
+    const ready = nextText(a);
+    await new Promise<void>((resolve, reject) => { channel.onopen = () => resolve(); channel.onerror = () => reject(new Error("channel failed")); });
+    channel.send("ready");
+    expect(await ready).toBe("ready");
+    expect((await fetch(http + "/client?node=n", { headers })).status).toBe(503);
+    a.close(); await closed(a); await closed(channel);
+    const b = connect(base, "/client?node=n");
+    expect(JSON.parse(await nextText(control)).type).toBe("connect");
+    await closed(b); // pending session times out
+    const c = connect(base, "/client?node=n");
+    expect(JSON.parse(await nextText(control)).type).toBe("connect");
+    c.close();
+  });
+
+  test("global WebSocket cap rejects excess sockets and releases on close", async () => {
+    const { base } = startRelay(1000, { maxWebSockets: 2 });
+    const http = base.replace("ws:", "http:");
+    const headers = { Authorization: `Bearer ${secret}` };
+    const a = connect(base, "/node?id=a");
+    const b = connect(base, "/node?id=b");
+    await Promise.all([nextText(a), nextText(b)]);
+    expect((await fetch(http + "/node?id=c", { headers })).status).toBe(503);
+    const denied = connect(base, "/node?id=denied");
+    await closed(denied);
+    b.close(); await closed(b);
+    const c = connect(base, "/node?id=c");
+    expect(await nextText(c)).toBe("registered");
+  });
+
+  test("global HTTP request window counts unauthorized requests and recovers", async () => {
+    const { base } = startRelay(1000, { maxRequestsPerSecond: 2 });
+    const http = base.replace("ws:", "http:");
+    expect((await fetch(http + "/")).status).toBe(401);
+    expect((await fetch(http + "/")).status).toBe(401);
+    const limited = await fetch(http + "/");
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("1");
+    await Bun.sleep(1050);
+    const ws = connect(base, "/node?id=after");
+    expect(await nextText(ws)).toBe("registered");
+  });
+
+  test("rejects invalid limit configuration", () => {
+    for (const name of ["maxNodes", "maxSessions", "maxWebSockets", "maxRequestsPerSecond"] as const) {
+      for (const value of [0, -1, 1.5, Infinity, NaN]) {
+        expect(() => createRelayServer({ secret, [name]: value })).toThrow();
+      }
+    }
+  });
+
   test("server send treats -1 as accepted without retry; 0 and overflow fail", () => {
     const sent: unknown[] = [];
     let buffered = 0;

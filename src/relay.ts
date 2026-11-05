@@ -1,10 +1,14 @@
 /**
  * TEST PROTOTYPE ONLY. A shared bearer secret gives every holder full access to
  * every node, including the ability to impersonate one. No per-node or user
- * authorization, rate limiting, reconnect, persistence, or SSH host checking
+ * authorization, per-identity rate limiting, reconnect, persistence, or SSH host checking
  * is provided. Use only on a trusted network; plain ws:// exposes the secret
  * and traffic. Supply TLS externally for wss://. SSH itself remains end-to-end
  * between the SSH client and server; this code does not implement SSH.
+ * Global application caps below do not limit TCP connections or incomplete HTTP
+ * headers before fetch, request/body bandwidth, or per-identity abuse. WebSocket
+ * idleTimeout remains disabled; node and active session lifetimes are unbounded.
+ * These limits do not make this prototype safe for public deployment.
  *
  * Protocol: WebSocket GET /node?id=NAME registers; GET /client?node=NAME
  * requests a session; GET /channel?id=UUID attaches the requested node channel.
@@ -34,7 +38,7 @@ export function sendRelayFrame(ws: Pick<ServerSocket, "send" | "getBufferedAmoun
 }
 
 type Role = "node" | "client" | "channel";
-type SocketData = { role: Role; id: string };
+type SocketData = { role: Role; id: string; sessionReserved?: boolean };
 type ServerSocket = import("bun").ServerWebSocket<SocketData>;
 type Session = {
   id: string; node: string; client: ServerSocket; channel?: ServerSocket;
@@ -47,6 +51,12 @@ export interface RelayOptions {
   port?: number;
   /** Maximum time for the node to attach and connect its local TCP socket. */
   setupTimeoutMs?: number;
+  /** Global limits. WebSocket slots include closing sockets until close. */
+  maxNodes?: number;
+  maxSessions?: number;
+  maxWebSockets?: number;
+  /** Fixed global one-second window, counts all HTTP requests reaching fetch. */
+  maxRequestsPerSecond?: number;
 }
 
 function validSecret(secret: string): void {
@@ -58,7 +68,22 @@ export function createRelayServer(options: RelayOptions) {
   validSecret(options.secret);
   const timeout = options.setupTimeoutMs ?? 10_000;
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid setup timeout");
+  const limit = (value: number | undefined, fallback: number, name: string) => {
+    const result = value ?? fallback;
+    if (!Number.isSafeInteger(result) || result <= 0) throw new Error(`Invalid ${name}`);
+    return result;
+  };
+  const maxNodes = limit(options.maxNodes, 64, "maxNodes");
+  const maxSessions = limit(options.maxSessions, 128, "maxSessions");
+  const maxWebSockets = limit(options.maxWebSockets, 384, "maxWebSockets");
+  const maxRequestsPerSecond = limit(options.maxRequestsPerSecond, 200, "maxRequestsPerSecond");
   const nodes = new Map<string, ServerSocket>();
+  const reservedNodes = new Set<string>();
+  const reservedChannels = new Set<string>();
+  let sessionCount = 0;
+  let socketCount = 0;
+  let windowStart = performance.now();
+  let requests = 0;
   const sessions = new Map<string, Session>();
   // Includes upgraded sockets not yet observed by open(), for stop().
   const sockets = new Set<ServerSocket>();
@@ -68,6 +93,7 @@ export function createRelayServer(options: RelayOptions) {
     const s = sessions.get(id);
     if (!s) return;
     sessions.delete(id);
+    sessionCount--;
     clearTimeout(s.timer);
     try { s.client.close(code, reason); } catch {}
     try { s.channel?.close(code, reason); } catch {}
@@ -77,26 +103,46 @@ export function createRelayServer(options: RelayOptions) {
     port: options.port ?? 0,
     fetch(req, srv) {
       if (stopping) return new Response("Stopping", { status: 503 });
+      const now = performance.now();
+      if (now - windowStart >= 1000) { windowStart = now; requests = 0; }
+      if (++requests > maxRequestsPerSecond) return new Response("Request limit exceeded", { status: 429, headers: { "Retry-After": "1" } });
       if (req.headers.get("authorization") !== `Bearer ${options.secret}`) return new Response("Unauthorized", { status: 401 });
       const url = new URL(req.url);
       let data: SocketData;
       if (url.pathname === "/node") {
         const id = url.searchParams.get("id") ?? "";
         if (!ID.test(id)) return new Response("Invalid node", { status: 400 });
-        if (nodes.has(id)) return new Response("Node already registered", { status: 409 });
+        if (nodes.has(id) || reservedNodes.has(id)) return new Response("Node already registered", { status: 409 });
+        if (nodes.size + reservedNodes.size >= maxNodes) return new Response("Node limit exceeded", { status: 503 });
         data = { role: "node", id };
       } else if (url.pathname === "/client") {
         const id = url.searchParams.get("node") ?? "";
         if (!ID.test(id)) return new Response("Invalid node", { status: 400 });
         if (!nodes.has(id)) return new Response("Node unavailable", { status: 404 });
-        data = { role: "client", id };
+        if (sessionCount >= maxSessions) return new Response("Session limit exceeded", { status: 503 });
+        data = { role: "client", id, sessionReserved: true };
       } else if (url.pathname === "/channel") {
         const id = url.searchParams.get("id") ?? "";
         const session = sessions.get(id);
-        if (!session || session.channel) return new Response("Unknown channel", { status: 404 });
+        if (!session || session.channel || reservedChannels.has(id)) return new Response("Unknown channel", { status: 404 });
         data = { role: "channel", id };
       } else return new Response("Not found", { status: 404 });
-      if (!srv.upgrade(req, { data })) return new Response("Expected WebSocket", { status: 400 });
+      if (socketCount >= maxWebSockets) return new Response("WebSocket limit exceeded", { status: 503 });
+      // Reserve before upgrade: open and close may happen in a later event-loop turn.
+      socketCount++;
+      if (data.role === "node") reservedNodes.add(data.id);
+      if (data.role === "client") sessionCount++;
+      if (data.role === "channel") reservedChannels.add(data.id);
+      let upgraded = false;
+      try { upgraded = srv.upgrade(req, { data }); } finally {
+        if (!upgraded) {
+          socketCount--;
+          if (data.role === "node") reservedNodes.delete(data.id);
+          if (data.role === "client") sessionCount--;
+          if (data.role === "channel") reservedChannels.delete(data.id);
+        }
+      }
+      if (!upgraded) return new Response("Expected WebSocket", { status: 400 });
       return undefined;
     },
     websocket: {
@@ -107,6 +153,8 @@ export function createRelayServer(options: RelayOptions) {
       open(ws) {
         sockets.add(ws);
         const { role, id } = ws.data;
+        if (role === "node") reservedNodes.delete(id);
+        if (role === "channel") reservedChannels.delete(id);
         if (stopping) { ws.close(); return; }
         if (role === "node") {
           if (nodes.has(id)) { ws.close(1008, "Node already registered"); return; }
@@ -119,9 +167,10 @@ export function createRelayServer(options: RelayOptions) {
           const session: Session = { id: sessionId, node: id, client: ws, ready: false,
             timer: setTimeout(() => end(sessionId), timeout) };
           sessions.set(sessionId, session);
-          if (!sendRelayFrame(node, JSON.stringify({ type: "connect", id: sessionId }))) end(sessionId);
-          // Use the session ID for close/message handling from now on.
+          ws.data.sessionReserved = false;
+          // Set before sending: a synchronous failure must still clean up this session.
           ws.data.id = sessionId;
+          if (!sendRelayFrame(node, JSON.stringify({ type: "connect", id: sessionId }))) end(sessionId);
         } else {
           const session = sessions.get(id);
           if (!session || session.channel) { ws.close(1008, "Unknown channel"); return; }
@@ -144,7 +193,9 @@ export function createRelayServer(options: RelayOptions) {
       },
       close(ws, code) {
         sockets.delete(ws);
+        socketCount--;
         const { role, id } = ws.data;
+        if (ws.data.sessionReserved) { sessionCount--; ws.data.sessionReserved = false; }
         if (role === "node") {
           if (nodes.get(id) !== ws) return;
           nodes.delete(id);

@@ -39,6 +39,21 @@ export class ChangeSpool {
     } finally { await unlink(temporary); }
     await directorySync(this.directory);
   }
+  /** Reserve a logical operation before effects. Never replay a started operation. */
+  async reserveOperation(registrationId: string, operationId: string): Promise<void> {
+    const directory = join(this.directory, "operations");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const name = createHash("sha256").update(JSON.stringify({ registrationId, operationId })).digest("hex");
+    let file;
+    try { file = await open(join(directory, name + ".json"), "wx", 0o600); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Operation already started; inspect its recorded result instead of replaying it");
+      throw error;
+    }
+    try { await file.writeFile(JSON.stringify({ registrationId, operationId })); await file.sync(); }
+    finally { await file.close(); }
+    await directorySync(directory);
+  }
   /** Explicit flush; a failed/uncertain record stays pending with its original ID. */
   async flush(client: ChangeClient): Promise<{ synced: string[]; pending: number }> {
     let names: string[];

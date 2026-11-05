@@ -18,7 +18,7 @@ test("unavailable SSH route produces an unknown result with durable evidence and
       command: "echo must-not-run", timeoutMs: 100, spool: new ChangeSpool(dir) });
     assert.equal(result.outcome, "unknown"); assert.equal(result.routeId, null);
     assert.equal(result.locallyRecorded, true); assert.equal(result.synced, false);
-    assert.equal((await readdir(dir)).length, 2);
+    assert.equal((await readdir(dir)).filter(name => name.endsWith(".json")).length, 2);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

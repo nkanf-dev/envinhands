@@ -27,6 +27,7 @@ export async function runAuditedOperation(registration: AgentRegistrationInput,
   spool: ChangeSpool, mutate: () => Promise<MutationResult>): Promise<AuditedOperationResult> {
   const identity = parseRegistration(registration);
   const initial = parseChange({ ...change, requestId: randomUUID(), outcome: "unknown", occurredAt: new Date().toISOString() });
+  await spool.reserveOperation(identity.registrationId, initial.operationId);
   await spool.enqueue(identity, initial); // Cannot start a mutation without durable intent.
   let result: MutationResult;
   try { result = await mutate(); }

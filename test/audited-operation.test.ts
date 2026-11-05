@@ -16,7 +16,7 @@ test("durable intent exists before mutation and completion appends a distinct si
   try {
     const result = await runAuditedOperation(registration, metadata, spool, async () => {
       calls++;
-      const names = await readdir(spool.directory); assert.equal(names.length, 1);
+      const names = (await readdir(spool.directory)).filter(name => name.endsWith(".json")); assert.equal(names.length, 1);
       const initial = JSON.parse(await readFile(join(spool.directory, names[0]), "utf8"));
       assert.equal(initial.change.outcome, "unknown"); assert.equal(initial.registration.signature, "Agent A");
       await writeFile(join(dir, "fixture"), "new value");
@@ -24,7 +24,9 @@ test("durable intent exists before mutation and completion appends a distinct si
     });
     assert.equal(calls, 1); assert.equal(result.outcome, "success"); assert.equal(result.synced, false);
     assert.equal(result.locallyRecorded, true); assert.notEqual(result.completedRequestId, result.startedRequestId);
-    assert.equal((await readdir(spool.directory)).length, 2);
+    assert.equal((await readdir(spool.directory)).filter(name => name.endsWith(".json")).length, 2);
+    await assert.rejects(runAuditedOperation(registration, metadata, new ChangeSpool(spool.directory), async () => { calls++; return { outcome: "success" }; }), /already started/);
+    assert.equal(calls, 1);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

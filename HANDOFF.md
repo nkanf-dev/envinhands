@@ -12,11 +12,11 @@
 
 - `src/control.ts`：内存机器、心跳、资源留言控制面。无认证、TLS 或持久化；不得公网暴露。
 - `src/relay.ts`：WebSocket 反向 TCP 中继实验原型。仅共享 bearer 密钥；任何持钥者能冒充节点或连接节点；有基础应用层限额但无完整公网防护；不支持透明 TCP 半关闭，也不能保证 WebSocket 关闭后的远端排空错误会传回。不要生产使用。
-- `src/transports/policy.ts`：根据传入的探测结果选择并回退；不执行探测或连接。
+- `src/transports/policy.ts`：根据传入的探测结果选择并回退；不执行探测或连接。`src/cli.ts` 现包含 server/relay/node/proxy/register/tmux 子命令；tmux 需要交互 TTY。
 - `src/transports/uu.ts`：调用外部 `uuremote-viewer portmap` 的进程封装。启动不代表连接成功，未实测 UU。
 - `src/transports/rathole.ts`：启动预装 rathole 的进程封装。启动不代表连接成功，不负责生成配置、密钥或校验 TLS。
 - `src/readiness.ts` / `src/windows-readiness.ts`：检查服务端 SSH 身份在 Linux/macOS 是否能无交互 `sudo`，或 Windows 会话实际管理员令牌（仅 mock，未在真实 Windows 实测）；支持可配置 relay 代理。并不注册账号或安装公钥。`src/registration/linux.ts` 与 `native/linux-register` 只生成计划，apply 始终阻止执行；Rust 实验依赖系统 libsodium。
-- `src/session/tmux.ts` / `tmux-relay.ts`：构造 tmux SSH 参数及经 relay 的 ProxyCommand；目前尚未集成 tmux CLI 或实机验证持久会话；不保证机器重启后会话存续。
+- `src/session/tmux.ts` / `tmux-relay.ts`：构造 tmux SSH 参数及经 relay 的 ProxyCommand；CLI `tmux NODE_ID SESSION_KEY [USER]` 已接入，需交互 TTY 并提前信任派生 host key，尚未实机验证持久会话；不保证机器重启后会话存续。
 - `src/agent-bus.ts` 和 `src/server.ts`：实验性 SQLite Agent 心跳与消息持久队列，内置 Bun HTTP 监听，默认 `0.0.0.0:8787`、共享 bearer，无 TLS。接受仅表示存储，消费可能重复；同一 token 可冒充任意 Agent。只能在可信网络或正确配置的 HTTPS 反向代理后面使用。
 - `src/prime-bridge.ts`：Agent bus 的 TS 客户端，提供显式 heartbeat/send/pull/ack；Prime fork 通过独立的 opt-in 工具调用同一总线，但不会自动把远端消息注入本地 session。
 - `src/storage.ts` 和 `src/machine-api.ts`：机器元数据与留言 SQLite 存储和 bearer API；已接入 `src/server.ts`，但仅登记数据，不安装 SSH 或设置管理员权限。
@@ -25,7 +25,7 @@
 
 ## 已验证（仅本机）
 
-Bun 1.4.4；本次更新 `bun test`：131 项通过；`bun run typecheck`：通过。后续改动的实际测试结果以最新提交为准。测试包括本地 socket 和 mock；另已用单文件 CLI、临时 sshd 和密钥完成一次真实本机 OpenSSH 测试，正确主机密钥成功、错误密钥被拒绝。不证明真实 UU、rathole、Windows/macOS 或互联网可用。实验中曾复现反向中继背压和关闭丢数据；当前测试已覆盖部分回归，但实际网络背压和异常语义仍需审查。用户明确不需要 CI；原 GitHub Actions 工作流已移除。以本地测试为准。
+Bun 1.4.4；本次更新 `bun test`：137 项通过；`bun run typecheck`：通过。后续改动的实际测试结果以最新提交为准。测试包括本地 socket 和 mock；另已用单文件 CLI、临时 sshd 和密钥完成一次真实本机 OpenSSH 测试，正确主机密钥成功、错误密钥被拒绝。不证明真实 UU、rathole、Windows/macOS 或互联网可用。实验中曾复现反向中继背压和关闭丢数据；当前测试已覆盖部分回归，但实际网络背压和异常语义仍需审查。Prime Agent 的三个扩展使用真实 TypeBox 跑过 26 项本地测试；真实 0.9.8 扩展加载器隔离加载了心跳与消息工具，但资源工具尚未作真实加载器测试。用户明确不需要 CI；原 GitHub Actions 工作流已移除。以本地测试为准。
 
 ```bash
 cd ~/projs/envinhands

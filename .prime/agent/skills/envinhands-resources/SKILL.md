@@ -77,7 +77,7 @@ bun run src/cli.ts node NODE_ID
 ssh -o 'BatchMode=yes' -o 'StrictHostKeyChecking=yes' -o 'ProxyCommand=/absolute/path/envinhands proxy NODE_ID' -p PORT -l USER -- HOST
 ```
 
-替换占位符；`NODE_ID` 须与节点一致。proxy 使用环境中的密钥，stdout 是 SSH 字节流；不要在 ProxyCommand 中写密钥。没有编译后的可执行文件时请管理员提供，不要假设它存在。连接成功后，在远端已有 tmux 的前提下运行 `tmux new -s work`；重连后用 `tmux attach -t work`。先与团队协调会话名，避免误附加或终止他人会话。中断后核实远端进程和任务结果：节点会重试控制连接，现有 SSH 会话不会无缝恢复；tmux 也不能保证机器重启后的状态。CLI 不会自动管理 tmux。
+替换占位符；`NODE_ID` 须与节点一致。proxy 使用环境中的密钥，stdout 是 SSH 字节流；不要在 ProxyCommand 中写密钥。没有编译后的可执行文件时请管理员提供，不要假设它存在。连接成功后，在远端已有 tmux 的前提下运行 `tmux new -s work`；重连后用 `tmux attach -t work`。先与团队协调会话名，避免误附加或终止他人会话。中断后核实远端进程和任务结果：节点会重试控制连接，现有 SSH 会话不会无缝恢复；tmux 也不能保证机器重启后的状态。交互终端也可使用已编译的 `envinhands tmux NODE_ID SESSION_KEY USER`；它使用派生的 SSH 主机名，需预先通过可信渠道验证并配置对应 host key，详见 `docs/quickstart.md`。无交互 TTY 的 Agent 不能假设该命令可用。
 
 ## 3. 收尾与经验
 

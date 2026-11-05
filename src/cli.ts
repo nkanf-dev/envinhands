@@ -4,9 +4,16 @@ import { startAgentBusServer } from "./server.ts";
 import { createRelayServer } from "./relay.ts";
 import { startNodeRuntime } from "./node-runtime.ts";
 import { startSshProxy } from "./ssh-proxy.ts";
+import { buildTmuxRelayArgv } from "./session/tmux-relay.ts";
+import { spawn } from "node:child_process";
+import { constants as osConstants } from "node:os";
 
-const help = `Usage: bun src/cli.ts <server|relay|node NODE_ID|proxy NODE_ID>
+const help = `Usage: bun src/cli.ts <server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
+register: --id ID --name NAME --host HOST --os OS --ssh-user USER [--ssh-port PORT] [--relay-node NODE_ID]
+          ENVINHANDS_URL and ENVINHANDS_TOKEN required. HTTPS required except
+          loopback HTTP; ENVINHANDS_ALLOW_INSECURE_HTTP=1 permits other HTTP
+          with a warning. Registration may remain pending; no keys or sudo are configured.
 server: ENVINHANDS_TOKEN (required), ENVINHANDS_HOST (default 0.0.0.0),
         ENVINHANDS_PORT (default 8787), ENVINHANDS_DB (default envinhands.sqlite).
 relay:  ENVINHANDS_RELAY_SECRET (required), ENVINHANDS_RELAY_HOST (default 0.0.0.0),
@@ -15,6 +22,11 @@ node:   ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET (required),
         ENVINHANDS_SSH_PORT (default 22; local 127.0.0.1 only).
 proxy:  ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET (required).
         Use as an OpenSSH ProxyCommand; stdout carries SSH bytes only.
+tmux:   ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET required. Set
+        ENVINHANDS_PROXY_BINARY to the absolute path of the compiled CLI when
+        running from source. Requires interactive stdin and stdout, local ssh,
+        remote ssh/tmux, and a host key verified out of band. Windows unsupported.
+        A disconnected connection cannot establish the task outcome.
 
 Pass secrets in environment variables, never in command-line arguments.
 Plain ws:// exposes the relay secret and traffic: use only on a trusted network.
@@ -34,12 +46,46 @@ export interface CliDependencies {
   startProxy: typeof startSshProxy;
   signals: SignalSource;
   stderr: { write(text: string): unknown };
+  stdout: { write(text: string): unknown };
+  fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  requestTimeoutMs: number;
+  platform: NodeJS.Platform;
+  compiled: boolean;
+  execPath: string;
+  stdinIsTTY: boolean;
+  stdoutIsTTY: boolean;
+  runSsh: (argv: string[], env: NodeJS.ProcessEnv, signals: SignalSource) => Promise<number>;
 }
 const defaults: CliDependencies = {
   startServer: startAgentBusServer, startRelay: createRelayServer,
   startNode: startNodeRuntime, startProxy: startSshProxy,
-  signals: process, stderr: process.stderr,
+  signals: process, stderr: process.stderr, stdout: process.stdout,
+  fetch: globalThis.fetch, requestTimeoutMs: 20_000,
+  platform: process.platform, compiled: Bun.main.startsWith("/$bunfs/"), execPath: process.execPath,
+  stdinIsTTY: !!process.stdin.isTTY, stdoutIsTTY: !!process.stdout.isTTY,
+  runSsh: runSshProcess,
 };
+/** Run SSH directly, keeping the terminal and inherited environment intact. */
+function runSshProcess(argv: string[], env: NodeJS.ProcessEnv, signals: SignalSource): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(argv[0]!, argv.slice(1), { shell: false, stdio: "inherit", env });
+    const onInt = () => { child.kill("SIGINT"); };
+    const onTerm = () => { child.kill("SIGTERM"); };
+    signals.on("SIGINT", onInt);
+    signals.on("SIGTERM", onTerm);
+    const cleanup = () => {
+      signals.removeListener("SIGINT", onInt);
+      signals.removeListener("SIGTERM", onTerm);
+    };
+    child.once("error", err => { cleanup(); reject(err); });
+    child.once("close", (code, signal) => {
+      cleanup();
+      resolve(code ?? (signal && signal in osConstants.signals
+        ? 128 + osConstants.signals[signal as keyof typeof osConstants.signals] : 1));
+    });
+  });
+}
+
 const nodeIdPattern = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 class UsageError extends Error {}
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -70,12 +116,133 @@ function relayUrl(env: NodeJS.ProcessEnv): string {
   } catch { throw new UsageError("Invalid ENVINHANDS_RELAY_URL (use ws:// or wss:// without credentials, query, or fragment)."); }
 }
 
+const registerFlags = new Set(["--id", "--name", "--host", "--os", "--ssh-user", "--ssh-port", "--relay-node"]);
+const MAX_RESPONSE_BYTES = 16 * 1024;
+
+function registerArgs(args: string[]): Record<string, string | number> {
+  const values: Record<string, string> = {};
+  for (let i = 0; i < args.length; i += 2) {
+    const flag = args[i], value = args[i + 1];
+    if (!registerFlags.has(flag!) || flag! in values || !value || value.startsWith("--") || /[\x00-\x1f\x7f]/.test(value))
+      throw new UsageError("Invalid register arguments. Use --help for usage; never pass secrets as arguments.");
+    values[flag!] = value;
+  }
+  if (!["--id", "--name", "--host", "--os", "--ssh-user"].every(k => values[k]))
+    throw new UsageError("Missing register arguments. Use --help for usage.");
+  if (!nodeIdPattern.test(values["--id"]!) || !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(values["--ssh-user"]!) ||
+      values["--name"]!.trim().length === 0 || values["--name"]!.length > 200 ||
+      values["--host"]!.trim().length === 0 || values["--host"]!.length > 253 ||
+      values["--os"]!.trim().length === 0 || values["--os"]!.length > 100)
+    throw new UsageError("Invalid register arguments.");
+  const data: Record<string, string | number> = { id: values["--id"]!, name: values["--name"]!, host: values["--host"]!, os: values["--os"]!, sshUser: values["--ssh-user"]! };
+  if (values["--ssh-port"] !== undefined) data.sshPort = port({ PORT: values["--ssh-port"] }, "PORT", "22");
+  if (values["--relay-node"] !== undefined) {
+    if (!nodeIdPattern.test(values["--relay-node"])) throw new UsageError("Invalid relay node ID.");
+    data.relayNodeId = values["--relay-node"];
+  }
+  return data;
+}
+
+function apiUrl(env: NodeJS.ProcessEnv, warn: (s: string) => void): string {
+  const raw = required(env, "ENVINHANDS_URL");
+  let url: URL;
+  try {
+    if (!/^https?:\/\/[^\s\x00-\x1f\x7f\\/?#@]+\/?$/i.test(raw)) throw new Error();
+    url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/" || !/^https?:\/\//i.test(raw)) throw new Error();
+  } catch { throw new UsageError("Invalid ENVINHANDS_URL (use an HTTP(S) origin without credentials, path, query, or fragment)."); }
+  if (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+    if (env.ENVINHANDS_ALLOW_INSECURE_HTTP !== "1") throw new UsageError("Insecure HTTP rejected; use HTTPS or set ENVINHANDS_ALLOW_INSECURE_HTTP=1 to explicitly allow plaintext HTTP.");
+    warn("Warning: insecure HTTP exposes the bearer token and machine data on the network.");
+  }
+  return url.origin;
+}
+
+async function responseJson(response: Response): Promise<unknown> {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_RESPONSE_BYTES)) throw new Error("Invalid response size");
+  if (!response.body) throw new Error("Empty response");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) { void reader.cancel().catch(() => {}); throw new Error("Response too large"); }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const data = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.length; }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(data));
+}
+
+async function register(args: string[], env: NodeJS.ProcessEnv, deps: CliDependencies): Promise<number> {
+  const data = registerArgs(args);
+  const origin = apiUrl(env, text => deps.stderr.write(text + "\n"));
+  const token = required(env, "ENVINHANDS_TOKEN");
+  if (/\s|[\x00-\x1f\x7f]/.test(token)) throw new UsageError("Invalid ENVINHANDS_TOKEN.");
+  const request = async (path: string, body?: string): Promise<{ status: number; data: unknown }> => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Timeout")); }, deps.requestTimeoutMs); });
+    try {
+      return await Promise.race([(async () => {
+        const response = await deps.fetch(origin + path, { method: "POST", redirect: "error", signal: controller.signal,
+          headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, body });
+        if (response.status === 409) { void response.body?.cancel().catch(() => {}); return { status: 409, data: null }; }
+        if (!response.ok) { void response.body?.cancel().catch(() => {}); return { status: response.status, data: null }; }
+        return { status: response.status, data: await responseJson(response) };
+      })(), timeout]);
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+  };
+  const created = await request("/v1/machines", JSON.stringify(data));
+  if (created.status === 409) { deps.stderr.write("Registration not-ready: machine already exists (409); no changes made. Confirm its state before retrying.\n"); return 1; }
+  if (created.status !== 202) { deps.stderr.write("Registration not-ready: server did not accept the request; a pending record may exist.\n"); return 1; }
+  const verified = await request(`/v1/machines/${encodeURIComponent(String(data.id))}/verify`);
+  const value = verified.data as { machine?: { status?: unknown } } | null;
+  if (verified.status !== 200 || value?.machine?.status !== "ready") {
+    deps.stderr.write("Registration not-ready: verification failed or is unsupported; the record may remain pending. No automatic key or sudo setup was performed.\n"); return 1;
+  }
+  deps.stdout.write("Registration successful: machine is ready. Verification used the server's SSH identity only; verify each agent separately. No SSH key or sudo setup was performed.\n");
+  return 0;
+}
+
 /** Run a command. Dependencies and environment are injectable for tests. */
 export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.env,
   overrides: Partial<CliDependencies> = {}): Promise<number> {
   const deps = { ...defaults, ...overrides };
   const error = (text: string) => deps.stderr.write(text + "\n");
   const [command, id] = args;
+  if (command === "tmux") {
+    try {
+      if (args.length < 3 || args.length > 4) throw new UsageError("Invalid tmux arguments. Use --help for usage.");
+      if (deps.platform === "win32") throw new UsageError("tmux via relay is unsupported on Windows.");
+      if (!deps.stdinIsTTY || !deps.stdoutIsTTY) throw new UsageError("tmux requires interactive stdin and stdout TTYs.");
+      const url = relayUrl(env);
+      required(env, "ENVINHANDS_RELAY_SECRET");
+      const binaryPath = env.ENVINHANDS_PROXY_BINARY ?? (deps.compiled ? deps.execPath : undefined);
+      if (!binaryPath) throw new UsageError("Set ENVINHANDS_PROXY_BINARY to the absolute path of the compiled CLI.");
+      let argv: string[];
+      try { argv = buildTmuxRelayArgv({ nodeId: id!, sessionKey: args[2]!, user: args[3], binaryPath, platform: deps.platform }); }
+      catch { throw new UsageError("Invalid tmux arguments or ENVINHANDS_PROXY_BINARY."); }
+      if (new URL(url).protocol === "ws:") error("Warning: ws:// is plaintext; use only on a trusted network. Use wss:// with TLS on public networks.");
+      return await deps.runSsh(argv, env, deps.signals);
+    } catch (err) {
+      error(err instanceof UsageError ? err.message : "Command failed.");
+      return 1;
+    }
+  }
+  if (command === "register") {
+    try { return await register(args.slice(1), env, deps); }
+    catch (err) {
+      error(err instanceof UsageError ? err.message : "Registration not-ready: request failed or timed out; a pending record may exist. No changes were rolled back.");
+      return 1;
+    }
+  }
   if (args.length === 1 && (command === "--help" || command === "-h")) { deps.stderr.write(help); return 0; }
   if (!command || !["server", "relay", "node", "proxy"].includes(command) ||
       ((command === "node" || command === "proxy") ? args.length !== 2 || !nodeIdPattern.test(id ?? "") : args.length !== 1)) {

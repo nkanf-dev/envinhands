@@ -1,5 +1,9 @@
 # EnvInHands
 
+- [目标详细设计](docs/design.md)：产品愿景、架构、待实现方案和验收标准。
+- [目标协议设计](docs/protocol.md)：注册、多路径、Agent 协作与恢复的未来契约。
+- [实验性原型快速开始](docs/quickstart.md) · [开发交接](HANDOFF.md)
+
 ## 项目定位
 
 EnvInHands 是一个供三人团队使用的远程机器协作工具的初始设计。团队成员身处不同地点，使用不同平台，需要共同了解机器、连接状态、Agent 活动和资源相关的留言。
@@ -80,7 +84,7 @@ EnvInHands 是一个供三人团队使用的远程机器协作工具的初始设
 
 ## 当前状态
 
-当前代码包含 SQLite 消息与机器目录服务、实验性 SSH 反向中继与 CLI、传输选择、UU/rathole 进程适配、管理员就绪检查和 tmux 命令构造。Prime Agent fork 的 `main` 已有 opt-in 心跳、消息和资源工具。真实 OpenSSH 和 Prime 加载器已在本机隔离测试；跨机器与公网尚未验证。自动配置公钥与 sudo、多后端自动连通及 tmux CLI 接入仍未完成；Windows 管理员检查已有 mock 测试，尚未实机验证。
+当前代码包含 SQLite 消息与机器目录服务、实验性 SSH 反向中继与 CLI、传输选择、UU/rathole 进程适配、管理员就绪检查和 tmux 命令构造。Prime Agent fork 的 `main` 已有 opt-in 心跳、消息和资源工具。真实 OpenSSH 和 Prime 加载器已在本机隔离测试；跨机器与公网尚未验证。自动配置公钥与 sudo、多后端自动连通和 tmux 的实机恢复验证仍未完成；Windows 管理员检查已有 mock 测试，尚未实机验证。
 
 控制面没有认证或 TLS；实验性中继只有共享密钥，存在明确的流控与关闭语义限制。**不要将原型直接暴露公网，也不要以此作为生产连接通道。** Agent 管理员就绪要求见 [架构草案](docs/architecture.md)，连接方案及其状态见 [候选清单](docs/transports.md)。
 

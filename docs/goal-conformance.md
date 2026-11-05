@@ -77,6 +77,10 @@
 - **E31**：cross-host-work-20261105T202717Z/product-fixed-access-reconnect.json 与 product-outbound-publication-reconnect.json：产品access同profile固定53611 stop/down/restart，catalog不改两host读取恢复；publish实际OpenSSH确认固定VM45321→Windows自有54559，认证资源发现/目录/读回，stop后端口闭合、同profile再起原consumer配置可用，无写重放。不自建公网/修改防火墙，不代表异地站点。
 - **E32**：shared-write-operation-20261105T214721427159Z/SHARED-WRITE-OPERATION-DELIVERY.md 和 actual-vm-write-reply-loss-original-operation：caller在发前保留hostId+operationId，成功/conflict/unknown区分；files inspect/Prime inspect查询原目标，不误查默认origin。实际Windows→VM110bytes新文件仅写1次，真实响应被fixture丢弃后unknown→原ID查unknown/success→readback；独立VM物理hash8d4a5ea5...2352 exit0，无第二写。消费者type首失败与nativeACL集成失败均保留并已修后复验。
 
+- **E33**：vm-2801896-20261105T215908Z/VM-2801896-VALIDATION.md：精确184文件/commit2801896全哈希核对，Linux220pass1skip0fail/type0，完整CLI编译并私有config hosts实际exit0；Win221pass/type0/compiled ACL ordinary+protected及发布实际入口证据另列。源码与锁前后不变；不把独立旧服务切换自动并入该gate。
+
+- **E34**：normal-cli-two-host-readonly-20261105T220222528418Z/after-client-model-split/NORMAL-FULL-CLI-READONLY-DELIVERY.md：原Node+tsx控制器、实际Node完整Prime CLI PID8332/session01a1adbf-9e54-7198-95a3-b51ab7b8e7ec，新配置正常7Env扩展/2skills，无禁用skills/builtin；8个实际Agent工具turn发现并读两host不同内容、inspect原unknown/success。真实ctx与getstate一致、skills在command/systemprompt、0工作文件写/0paid。基线2801896叠加本轮pure-client-model修复，不倒写旧commit已含；首Node.ps1和Bun诊断缺tools失败保留。root修后nativeNode客户端两host实际读回、Windows全221pass/type0。
+
 ## 推送后复核结论
 
 原目标未全部符合。可确认真实 Prime→VM 的协作/授权普通用户工作正常；不能把 pending 设备等同注册最终成功。独立复核所指的 Unix 应用/撤销、实际公钥身份+持久观察、direct CLI/API署名与正式服务重启已继续实现并实测其受控范围；不能把这一批新结果倒写为旧版已完成。仍有 Windows 真实管理员应用/SSH令牌正向、工具外修改边界、实际管理员正向、整体系生产恢复及永久服务等缺口。真实六设备、每身份管理员正向与两实际地点/两个可用入口还需获准环境。正常 profile 与相对 edit 定位是本次独立审查后完成的具体修复，不倒写此前模型报告。

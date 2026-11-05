@@ -1,6 +1,6 @@
 import { PrimeBridge, BridgeError } from "./prime-bridge.ts";
-import { parseSharedFileLocation, parseSharedDirectoryLocation, parseSharedFileWrite, sharedFileHash, type SharedFile, type SharedFileWrite, type SharedFileWriteReceipt, type SharedResource, type SharedDirectory } from "./shared-files.ts";
-import { SHARED_FILE_REQUEST_MAX_BYTES } from "./shared-files-api.ts";
+import { parseSharedFileLocation, parseSharedDirectoryLocation, parseSharedFileWrite, sharedFileHash, type SharedFile, type SharedFileWrite, type SharedFileWriteReceipt, type SharedResource, type SharedDirectory } from "./shared-files-model.ts";
+import { SHARED_FILE_REQUEST_MAX_BYTES } from "./shared-files-model.ts";
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 export class SharedFilesClient extends PrimeBridge {
   async listResources(): Promise<{ resources: SharedResource[] }> {

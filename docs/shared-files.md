@@ -188,3 +188,15 @@ Windows access descriptor equivalence checked as above. These checks do not
 provide cross-process locks or protection against malicious concurrent local
 writers. A post-replacement verification error means effects may exist; retain
 hostId/operationId, inspect the selected host and read back, never blindly retry.
+
+## Client/runtime boundary
+
+SharedFilesClient and write-operation inspection import only the pure
+shared-files-model wire schema/hash/constants, not server filesystem code or
+native PowerShell assets. This matters for ordinary Node/Prime source loading.
+The resource service's Bun filesystem implementation still uses the native
+Windows helper for access-right preservation. A cold normal Node controller and
+Prime loader failure exposed the original accidental dependency; pure-model
+separation fixed it, and native Node client discovery/read across both current
+hosts passed. Do not solve a client-import failure merely by changing the
+controller to Bun and claiming normal Node compatibility.

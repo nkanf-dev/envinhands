@@ -5,7 +5,7 @@ import { ChangeClient } from "./change-client.ts";
 import { BridgeError, type Fetcher } from "./prime-bridge.ts";
 import { createSignedFetch } from "./signed-fetch.ts";
 import type { AgentRegistrationInput, ChangeRecord } from "./change-model.ts";
-import type { SharedFileWrite, SharedFileWriteReceipt } from "./shared-files.ts";
+import type { SharedFileWrite, SharedFileWriteReceipt } from "./shared-files-model.ts";
 export interface SharedOperationHost { hostId: string; baseUrl: string; token: string; fetch: Fetcher }
 export type SharedWriteOperation = {hostId:string;operationId:string;status:"success"} & SharedFileWriteReceipt |
   {hostId:string;operationId:string;status:"conflict"|"unknown"};

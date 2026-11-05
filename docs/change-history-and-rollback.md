@@ -99,3 +99,9 @@ Prime独立ZIP提交e263f1b已push，tools-manager单ZIP调用替换，tar不变
 Windows原rename确实改变protectedDACL，首观察保留；nativeReplace后ordinarySDDL D:→D:AI导致假unknown（内容已改）亦保留，最终仅规范0x400bookkeeping，其余owner/group/exactDACL/controlflags严格。首次ordinary/protected、native/compiled两路径均正常，消费者9pass/type0。caller早报type0错误明确撤回，Bunfetch属性修复后实际type0；临时publish负控与root全suite重叠215/2明确标concurrentfalsification状态，不当产品回归或最终绿，后续负控仅独立copy。后续sharedcore集成5fail与最终修复分别独立raw，不覆盖。
 
 撤回时需对应还原hostprofile/固定端口引用与nativehelper部署，保留原operation引用、服务audit与文件实际hash；若变更后结果unknown，先inspect/readback而非重放。生产工作服务、原keys/admin/firewall在本阶段未改。拥有的验收入口按PID/profile释放，禁止全局killSSH。
+
+## 正常 Node/Prime 冷启动的客户端边界修复
+
+正常profile组合验收首跑Node控制器在导入.ps1时失败；换Bun控制器的诊断虽然起了真实NodeCLI/skills，但sharedtools没有加载，不冒称通过。根因是SharedFilesClient复用shared-files服务端模型和API envelope常量，间接引入只应服务端加载的Windows原生资产。
+
+提取shared-files-model.ts（纯schema/hash/constants，无filesystem/Bun/nativehelper），client与operation类型仅依赖该模型；服务端保留兼容重导。真实Node+tsx客户端随后按同私有catalog发现并读两实际主机内容通过，Bun精确6pass/type0，完整正常PrimeCLI另以实际回执闭合。此为必要解耦，不新建框架或把Node依赖加到Env核心；回退必须同时恢复client/model/API引用，不能只删新模型文件。

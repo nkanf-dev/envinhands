@@ -1,6 +1,7 @@
 import { createSharedFiles, parseSharedFileLocation, parseSharedDirectoryLocation, parseSharedFileWrite, SharedFileError } from "./shared-files.ts";
 import { bearerAuth, response } from "./http.ts";
-export const SHARED_FILE_REQUEST_MAX_BYTES = 68 * 1024;
+export {SHARED_FILE_REQUEST_MAX_BYTES} from "./shared-files-model.ts";
+import {SHARED_FILE_REQUEST_MAX_BYTES} from "./shared-files-model.ts";
 async function requestBody(request: Request): Promise<unknown> {
   const reader = request.body?.getReader(); if (!reader) throw new SharedFileError(400, "Expected JSON file write");
   const chunks: Uint8Array[] = []; let size = 0;

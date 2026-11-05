@@ -6,7 +6,7 @@ import { parseRegistration } from "../change-model.ts";
 import { ChangeSpool } from "../change-spool.ts";
 import { ChangeClient } from "../change-client.ts";
 import { runRemoteExecution } from "../remote-execution.ts";
-import { buildSshRouteArgv, type SshRoute, type SshAccess } from "../transports/ssh-routes.ts";
+import { type SshRoute, type SshAccess } from "../transports/ssh-routes.ts";
 
 interface Context { sessionManager: { getSessionId(): string } }
 interface Profile { targetMachineId: string; routes: SshRoute[]; access: SshAccess; priority: string[]; probeBudgetMs: number; timeoutMs: number }
@@ -49,7 +49,6 @@ export default function primeExecution(pi: API): void {
         const profile = profiles[input.profileId] as Profile;
         if (!profile || typeof profile !== "object" || !Array.isArray(profile.routes) || !Array.isArray(profile.priority) ||
             !safeId.test(profile.targetMachineId) || /[\r\n]/.test(profile.targetMachineId)) throw new Error();
-        for (const route of profile.routes) buildSshRouteArgv(route, profile.access);
         const sessionId = ctx.sessionManager.getSessionId();
         const registrationId = "exec-" + createHash("sha256").update(JSON.stringify({ agentId, machineId, sessionId, signature })).digest("hex");
         const registration = parseRegistration({ registrationId, agentId, machineId, sessionId, signature });
@@ -59,14 +58,14 @@ export default function primeExecution(pi: API): void {
             action: "remote-command", summary: input.summary, reason: input.reason, authority: input.authority,
             beforeSha256: null, afterSha256: null, evidenceRef: null },
           routes: profile.routes, access: profile.access, priority: profile.priority, probeBudgetMs: profile.probeBudgetMs,
-          timeoutMs: profile.timeoutMs, command: input.command, spool });
+          timeoutMs: profile.timeoutMs, command: input.command, spool, signal });
         let synced = false;
         if (baseUrl && token) {
           try {
             const url = new URL(baseUrl);
             if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error();
-            await spool.flush(new ChangeClient({ baseUrl, token, fetch: globalThis.fetch.bind(globalThis) }));
-            synced = true;
+            const flushed = await spool.flush(new ChangeClient({ baseUrl, token, fetch: globalThis.fetch.bind(globalThis) }));
+            synced = flushed.pending === 0;
           } catch { /* Preserve exact requests locally and report pending, never replay work. */ }
         }
         return output({ ...receipt, synced, recording: synced ? "service-receipted" : "local-pending",

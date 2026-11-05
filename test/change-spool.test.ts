@@ -46,3 +46,29 @@ test("case-sensitive protocol IDs remain distinct on a case-insensitive client f
     assert.equal((await readdir(dir)).length, 2);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test("flush keeps producer order, reports concurrently queued work and serializes callers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "env-spool-order-")), spool = new ChangeSpool(dir);
+  const parent = { ...change, requestId: "intent-1" }, completed = { ...change, requestId: "outcome-1", outcome: "success" as const };
+  const later = { ...change, requestId: "later-1", operationId: "later-operation" };
+  const sent: string[] = [];
+  let queued = false, sequence = 0;
+  const client = new ChangeClient({ baseUrl: "http://127.0.0.1", token: "fixture-token", fetch: async (url, init) => {
+    const body = JSON.parse(String(init?.body));
+    const signed = { ...registration, registeredAt: "2026-11-05T18:00:00.000Z" };
+    if (String(url).endsWith("agent-registrations")) return Response.json({ registration: signed, duplicate: false });
+    sent.push(body.requestId);
+    if (!queued) { queued = true; await spool.enqueue(registration, later); }
+    return Response.json({ record: { ...body, sequence: ++sequence, recordedAt: signed.registeredAt, registration: signed }, duplicate: false });
+  } });
+  try {
+    await spool.enqueue(registration, parent);
+    await spool.enqueue(registration, completed, parent.requestId);
+    const first = await spool.flush(client);
+    assert.deepEqual(sent, [parent.requestId, completed.requestId]); assert.equal(first.pending, 1);
+    const drained = await Promise.all([spool.flush(client), new ChangeSpool(dir).flush(client)]);
+    assert.equal(drained[0].pending, 0); assert.equal(drained[1].pending, 0);
+    assert.deepEqual(sent, [parent.requestId, completed.requestId, later.requestId]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

@@ -37,7 +37,7 @@ export async function runAuditedOperation(registration: AgentRegistrationInput,
     const completed = parseChange({ ...initial, requestId: randomUUID(), outcome: result.outcome,
       occurredAt: new Date().toISOString(), beforeSha256: result.beforeSha256 === undefined ? initial.beforeSha256 : result.beforeSha256,
       afterSha256: result.afterSha256 ?? null, evidenceRef: result.evidenceRef ?? initial.evidenceRef });
-    await spool.enqueue(identity, completed);
+    await spool.enqueue(identity, completed, initial.requestId);
     completedRequestId = completed.requestId;
     return { operationId: initial.operationId, startedRequestId: initial.requestId, completedRequestId,
       outcome: result.outcome, locallyRecorded: true, synced: false };

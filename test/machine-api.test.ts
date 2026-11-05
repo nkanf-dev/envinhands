@@ -160,6 +160,10 @@ describe("readiness gate", () => {
       expect(Number.isFinite(Date.parse(failed.checkedAt ?? ""))).toBe(true);
       expect((await json(await call(api, "/v1/machines"))).machines).toEqual([]);
       expect((await json(await call(api, "/v1/machines?includePending=true"))).machines).toEqual([]);
+      const inventory = (await json(await call(api, "/v1/machines?includeNotReady=true"))).machines;
+      expect(inventory).toHaveLength(1); expect(inventory[0].status).toBe("not-ready");
+      expect((await call(api, "/v1/machines?includeNotReady=bad")).status).toBe(400);
+      expect((await call(api, "/v1/machines?includeNotReady=true&includeNotReady=false")).status).toBe(400);
     } finally { api.close(); }
   });
 

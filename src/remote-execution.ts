@@ -14,6 +14,7 @@ export interface RemoteExecution {
   command: string;
   timeoutMs: number;
   spool: ChangeSpool;
+  signal?: AbortSignal;
 }
 /** Executes one authorized remote command, never retries after a command started. */
 export async function runRemoteExecution(options: RemoteExecution) {
@@ -27,9 +28,11 @@ export async function runRemoteExecution(options: RemoteExecution) {
   let routeId: string | null = null, exitCode: number | null = null, timedOut = false, started = false;
   let output: Pick<ProcessReceipt, "stdout" | "stderr" | "outputTruncated"> = { stdout: "", stderr: "", outputTruncated: false };
   const audit = await runAuditedOperation(options.registration, options.change, options.spool, async () => {
+    if (options.signal?.aborted) return { outcome: "unknown" };
     const selected = await selectSshRoute(options.routes, options.access,
       { priority: options.priority, totalBudgetMs: options.probeBudgetMs });
     routeId = selected.route.id;
+    if (options.signal?.aborted) return { outcome: "unknown" };
     const completion = await runOwnedProcess("ssh", [...selected.argv, options.command], options.timeoutMs);
     started = completion.started;
     output = { stdout: completion.stdout, stderr: completion.stderr, outputTruncated: completion.outputTruncated };

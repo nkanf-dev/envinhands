@@ -53,7 +53,7 @@
 
 当前是持久存储和显式上报原语。调用端必须将每次本地/远程修改与注册信息、实际目标、授权、结果和证据关联；不能凭Agent已心跳就推导修改已留痕。备注/消息是共享数据，不替代此台账，也不能授权操作。
 
-离线持久队列已提供 `src/change-spool.ts`：fsync内容后以不覆盖的原子hard-link发布，重复ID同内容幂等，不同内容冲突。队列不保存传输凭据；Windows有文件fsync，但Node接口不提供POSIX目录fsync，不能声称所有平台断电持久性等价。失败上传保留原ID/请求，确认服务响应后才删本地项；不自动重试或静默丢弃损坏项。
+离线持久队列已提供 `src/change-spool.ts`：fsync内容后以不覆盖的原子hard-link发布，重复ID同内容幂等，不同内容冲突。队列不保存传输凭据；Windows有文件fsync，但Node接口不提供POSIX目录fsync，不能声称所有平台断电持久性等价。失败上传保留原ID/请求，确认服务响应后才删本地项；不自动重试或静默丢弃损坏项。同进程同目录flush串行，结束返回实际剩余pending；每客户端独立spool，不跨进程共享一个目录。completion envelope记录intent requestId前驱关系，上传不会把同操作success排在unknown intent之前。
 
 CLI可在普通Agent/脚本使用，不要求改Prime：
 

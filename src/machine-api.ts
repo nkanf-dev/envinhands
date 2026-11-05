@@ -45,12 +45,13 @@ export function createMachineApi({ dbPath, token, readinessTtlMs, verifier = che
         const path = url.pathname;
         if (path === "/v1/machines") {
           if (req.method === "GET") {
-            if ([...url.searchParams.keys()].some(k => k !== "os" && k !== "includePending") || url.searchParams.getAll("os").length > 1 || url.searchParams.getAll("includePending").length > 1) throw new HttpError(400, "Invalid query");
+            if ([...url.searchParams.keys()].some(k => k !== "os" && k !== "includePending" && k !== "includeNotReady") || url.searchParams.getAll("os").length > 1 || url.searchParams.getAll("includePending").length > 1 || url.searchParams.getAll("includeNotReady").length > 1) throw new HttpError(400, "Invalid query");
             const os = url.searchParams.get("os");
             const pending = url.searchParams.get("includePending");
-            if (pending !== null && pending !== "true" && pending !== "false") throw new HttpError(400, "Invalid query");
+            const notReady = url.searchParams.get("includeNotReady");
+            if ((pending !== null && pending !== "true" && pending !== "false") || (notReady !== null && notReady !== "true" && notReady !== "false")) throw new HttpError(400, "Invalid query");
             const machines = storage.listMachines(os === null ? undefined : text(os, "os", 100))
-              .filter(machine => machine.status === "ready" || (pending === "true" && machine.status === "pending"));
+              .filter(machine => machine.status === "ready" || (pending === "true" && machine.status === "pending") || (notReady === "true" && machine.status === "not-ready"));
             return reply(200, { machines });
           }
           if (req.method !== "POST") return method("GET, POST");

@@ -1,13 +1,14 @@
 /** Durable caller-owned spool. Pending local evidence is not a server receipt. */
 import { mkdir, open, readFile, readdir, unlink, link } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { parseRegistration, parseChange, type AgentRegistrationInput, type ChangeInput } from "./change-model.ts";
 import type { ChangeClient } from "./change-client.ts";
 
 const filename = (requestId: string) => createHash("sha256").update(requestId).digest("hex") + ".json";
 
-export interface PendingChange { registration: AgentRegistrationInput; change: ChangeInput }
+export interface PendingChange { registration: AgentRegistrationInput; change: ChangeInput; afterRequestId?: string }
+const flushes = new Map<string, Promise<unknown>>();
 async function directorySync(path: string): Promise<void> {
   // Windows does not expose POSIX directory fsync through node:fs. File fsync
   // remains required; this is a platform durability limit, not silent recovery.
@@ -18,8 +19,8 @@ async function directorySync(path: string): Promise<void> {
 export class ChangeSpool {
   constructor(readonly directory: string) {}
   /** Persists the exact request before any network operation. No credentials. */
-  async enqueue(registration: AgentRegistrationInput, change: ChangeInput): Promise<void> {
-    const pending = { registration: parseRegistration(registration), change: parseChange(change) };
+  async enqueue(registration: AgentRegistrationInput, change: ChangeInput, afterRequestId?: string): Promise<void> {
+    const pending: PendingChange = { registration: parseRegistration(registration), change: parseChange(change), ...(afterRequestId ? { afterRequestId } : {}) };
     if (pending.registration.registrationId !== pending.change.registrationId) throw new Error("Registration does not match change");
     const content = JSON.stringify(pending);
     if (new TextEncoder().encode(JSON.stringify(pending.change)).length > 16384) throw new Error("Change request too large");
@@ -56,25 +57,39 @@ export class ChangeSpool {
   }
   /** Explicit flush; a failed/uncertain record stays pending with its original ID. */
   async flush(client: ChangeClient): Promise<{ synced: string[]; pending: number }> {
+    const key = resolve(this.directory);
+    const previous = flushes.get(key) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(() => this.drain(client));
+    flushes.set(key, current);
+    try { return await current; }
+    finally { if (flushes.get(key) === current) flushes.delete(key); }
+  }
+  private async drain(client: ChangeClient): Promise<{ synced: string[]; pending: number }> {
     let names: string[];
     try { names = (await readdir(this.directory)).filter(name => name.endsWith(".json")).sort(); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { synced: [], pending: 0 };
       throw error;
     }
-    const synced: string[] = [];
+    const pending = new Map<string, PendingChange>();
     for (const name of names) {
-      const path = join(this.directory, name);
-      const saved = JSON.parse(await readFile(path, "utf8")) as PendingChange;
+      const saved = JSON.parse(await readFile(join(this.directory, name), "utf8")) as PendingChange;
       const registration = parseRegistration(saved.registration), change = parseChange(saved.change);
       if (filename(change.requestId) !== name || change.registrationId !== registration.registrationId) throw new Error("Invalid local change record");
-      await client.register(registration);
-      await client.recordChange(change);
-      // Remove only after both authenticated service responses have been validated.
-      await unlink(path);
-      await directorySync(this.directory);
-      synced.push(change.requestId);
+      pending.set(change.requestId, { registration, change, afterRequestId: saved.afterRequestId });
     }
-    return { synced, pending: 0 };
+    const synced: string[] = [];
+    while (pending.size) {
+      const next = [...pending.values()].find(saved => !saved.afterRequestId || !pending.has(saved.afterRequestId));
+      if (!next) throw new Error("Invalid local change ordering");
+      await client.register(next.registration);
+      await client.recordChange(next.change);
+      await unlink(join(this.directory, filename(next.change.requestId)));
+      await directorySync(this.directory);
+      synced.push(next.change.requestId);
+      pending.delete(next.change.requestId);
+    }
+    const remaining = (await readdir(this.directory)).filter(name => name.endsWith(".json")).length;
+    return { synced, pending: remaining };
   }
 }

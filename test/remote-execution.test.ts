@@ -30,3 +30,15 @@ test("remote CLI rejects credential-bearing input and missing local evidence bou
   assert.equal(await runRemoteCli([], { ENVINHANDS_CHANGE_SPOOL: tmpdir(), ENVINHANDS_TOKEN: "secret-token" }, io), 1);
   assert.equal(reads, 1); assert.ok(errors.every(s => !s.includes("secret-token")));
 });
+
+
+test("cancelled operation records unknown without dispatching an SSH task", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "env-remote-abort-"));
+  try {
+    const result = await runRemoteExecution({ registration, change, routes: [{ id: "route", host: "127.0.0.1", port: 1 }],
+      access: { user: "fixture", hostKeyAlias: "fixture.local" }, priority: ["route"], probeBudgetMs: 100,
+      command: "echo must-not-run", timeoutMs: 100, spool: new ChangeSpool(dir), signal: AbortSignal.abort() });
+    assert.equal(result.started, false); assert.equal(result.routeId, null); assert.equal(result.outcome, "unknown");
+    assert.equal(result.locallyRecorded, true);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 /** Explicit CLI entry point. Importing this module never starts a listener. */
+import { runRemoteAccessCli } from "./remote-access-cli.ts";
+import { runDeviceCli } from "./device-cli.ts";
 import { runCollaborationCli } from "./collaboration-cli.ts";
 import { runAccessCli } from "./access-cli.ts";
 import { runRemoteCli } from "./remote-cli.ts";
@@ -12,8 +14,12 @@ import { buildTmuxRelayArgv } from "./session/tmux-relay.ts";
 import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
 
-const help = `Usage: bun src/cli.ts <collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: bun src/cli.ts <access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
+access: encrypted SSH forwarding to configured loopback control service;
+        one absolute JSON profile path, emits local URL, stop with SIGINT/SIGTERM.
+device: register reads JSON id/host and optional SSH fields; collects local OS/name.
+        Default registers pending metadata only. inventory includes failed/stale devices.
 collaborate: heartbeat|agents|send|pull|ack|machines|notes|add-note.
         JSON stdin except agents/machines; explicit actions, no automatic execution.
 verify-access: JSON stdin; verify this client SSH identity/path and real admin,
@@ -52,7 +58,7 @@ termination on untrusted networks. This prototype uses a shared secret; TLS alon
 does not provide per-node authorization. It does not configure SSH keys or sudo.
 `;
 
-interface SignalSource {
+export interface SignalSource {
   on(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
   removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
 }
@@ -234,7 +240,8 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
   const deps = { ...defaults, ...overrides };
   const error = (text: string) => deps.stderr.write(text + "\n");
   const [command, id] = args;
-  if (command === "change" || command === "exec" || command === "verify-access" || command === "collaborate") {
+  if (command === "access") return runRemoteAccessCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
+  if (command === "change" || command === "exec" || command === "verify-access" || command === "collaborate" || command === "device") {
     const io = {
       fetch: deps.fetch,
       write: (text: string) => deps.stdout.write(text),
@@ -251,7 +258,7 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
         return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
       },
     };
-    return command === "collaborate" ? runCollaborationCli(args.slice(1), env, io) : command === "change" ? runChangeCli(args.slice(1), env, io) : command === "verify-access" ? runAccessCli(args.slice(1), env, io) : runRemoteCli(args.slice(1), env, io);
+    return command === "device" ? runDeviceCli(args.slice(1), env, io) : command === "collaborate" ? runCollaborationCli(args.slice(1), env, io) : command === "change" ? runChangeCli(args.slice(1), env, io) : command === "verify-access" ? runAccessCli(args.slice(1), env, io) : runRemoteCli(args.slice(1), env, io);
   }
   if (command === "tmux") {
     try {

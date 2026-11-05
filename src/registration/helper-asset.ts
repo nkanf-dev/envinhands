@@ -2,7 +2,7 @@ import {mkdtemp,writeFile,rm,chmod} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 /** External interpreters cannot open Bun's embedded virtual files. Own a short-lived private copy. */
-export async function materializeRegistrationHelper(name:"unix-helper.py"|"windows-helper.ps1",source:string):Promise<{path:string;close():Promise<void>}>{
+export async function materializeRegistrationHelper(name:"unix-helper.py"|"windows-helper.ps1"|"windows-file-replace.ps1",source:string):Promise<{path:string;close():Promise<void>}>{
  const directory=await mkdtemp(join(tmpdir(),"env-registration-helper-"));
  try{
   if(process.platform!=="win32")await chmod(directory,0o700);

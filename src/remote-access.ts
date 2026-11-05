@@ -11,6 +11,8 @@ export interface RemoteAccessOptions {
   identityFile?: string;
   knownHostsFile?: string;
   jump?: string;
+  /** Fixed local loopback port for stable client references; default0 selects a random port. */
+  localPort?: number;
   destinationHost: "127.0.0.1";
   destinationPort: number;
 }
@@ -24,6 +26,7 @@ export interface RemoteAccessDependencies {
 }
 /** Listening is ready on return. It is not proof that SSH or the destination service is ready. */
 export async function startRemoteAccess(options: RemoteAccessOptions, dependencies: RemoteAccessDependencies = {}): Promise<RemoteAccess> {
+  if (!Number.isInteger(options.localPort ?? 0) || (options.localPort ?? 0) < 0 || (options.localPort ?? 0) > 65535) throw new Error("Invalid local access port.");
   if (options.destinationHost !== "127.0.0.1" || !Number.isInteger(options.destinationPort) || options.destinationPort < 1 || options.destinationPort > 65535)
     throw new Error("Remote access requires a loopback destination and valid port.");
   const routeArgs = buildSshRouteArgv({ id: "remote-access", host: options.host, port: options.port, jump: options.jump },
@@ -52,7 +55,7 @@ export async function startRemoteAccess(options: RemoteAccessOptions, dependenci
   await new Promise<void>((resolve, reject) => {
     const failed = (error: Error) => { server.off("listening", ready); reject(error); };
     const ready = () => { server.off("error", failed); resolve(); };
-    server.once("error", failed); server.once("listening", ready); server.listen(0, "127.0.0.1");
+    server.once("error", failed); server.once("listening", ready); server.listen(options.localPort ?? 0, "127.0.0.1");
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Remote access listener did not provide a TCP port.");

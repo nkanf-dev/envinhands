@@ -94,3 +94,19 @@ the real VM check using the approved existing SSH identity and service.
 For geographically separated members, the configured SSH host or jump must really be reachable from each site; the feature does not create an Internet path by itself. Use an existing approved jump/VPN or an independently configured encrypted relay/API ingress. Do not open the experiment's default wildcard ports as a shortcut.
 
 Main coordinator's actual Windows→DebianVM test returnedHTTP200 and observed live Agents using this product API, then closed the owned bridge. This confirms the authorized current route works; actual remote-site network acceptance remains separate.
+
+## Stable local entry across restart
+
+Optional `localPort` (0–65535) chooses a fixed loopback listener; default0 keeps
+random-port behavior. Use a fixed free approved local port for a private host
+catalog or normal Prime startup reference. An occupied port fails, never steals
+another listener. Returning ready still proves only local listening; make an
+actual authenticated request to verify SSH/backend.
+
+Actual product `access` replaced the controller's handwritten `ssh -L` at the
+same local53611 URL. A read succeeded, only this owned entry was stopped, the
+same URL became unreachable, then the same profile restarted and the unchanged
+host catalog discovered/read both hosts with unchanged hashes. No write was
+replayed and no service/key/firewall was changed. This is a controlled existing
+route restart, not automatic path migration or a geographically independent
+entry. See control-ingress.md for the complementary outbound publish command.

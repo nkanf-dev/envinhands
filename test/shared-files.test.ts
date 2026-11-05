@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {chmod,stat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -24,6 +24,11 @@ test("two clients read and update actual shared files with expected hashes and n
     const large = "x".repeat(65536); await a.write({resourceId:"project",path:"limit.txt",text:large,expectedSha256:null}); assert.equal((await b.read("project","limit.txt")).text,large);
     await assert.rejects(a.write({resourceId:"project",path:"oversize",text:large+"x",expectedSha256:null}));
     await writeFile(join(root,"bom.txt"),"\uFEFFvalid text");assert.equal((await a.read("project","bom.txt")).text,"\uFEFFvalid text");
+    if(process.platform!=="win32"){
+      const executable=join(root,"task.sh");await writeFile(executable,"#!/bin/sh\necho before\n");await chmod(executable,0o750);
+      const script=await a.read("project","task.sh");await b.write({resourceId:"project",path:"task.sh",text:"#!/bin/sh\necho after\n",expectedSha256:script.sha256});
+      assert.equal((await stat(executable)).mode&0o777,0o750);
+    }
   } finally { await server.stop(true); api.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

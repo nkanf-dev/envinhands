@@ -73,6 +73,10 @@
 - **E28**：relay-v2-20261105T212022Z/RELAY-V2-DELIVERY.md 与 vm-relay-v2-20261105T213407Z/VM-V2-175-RELAY-HANDOFF.md：显式v=2整组，Win/Linux focused24（含方向EOF后1MiB回包/反向FIN/提前close），root全Windows212pass/type0、精确Linux211pass1skip/type0；首红与旧node-runtime fixture更新保留。relay-v2-compiled-windows-real-sshd-first exit0，实际1000/Linux，严格hostkey/原身份，无旧实例升级/WSS/异地声明。
 - **E29**：Prime e263f1bd9e6f7fbac35359bda2c01425620c176b 已push且root独立完整SHA核对；只工具ZIP边界替换，先全成员预检后新staging写，六官方fd/rg ZIP实际提取与独立hash相符、未执行下载程序，Win/Linux helper+consumer16pass、正常check/loader/help通过。tar不变、无模型；仍有独立告警，不能宣称所有压缩包/异步reader.close错误已覆盖。
 
+- **E30**：vm-filemode-20261105T214223Z/LINUX-SHARED-FILE-MODE.md：独立overlay真实0750脚本CASwrite后仍0750。windows-inherited-acl-20261105T215220Z/INHERITED-ACL-FIX-DELIVERY.md：仅忽略自动继承bookkeeping0x400，owner/group/ACE/DACL其余严格；ordinary+protected各首次替换成功，root消费者9pass/type0，源码与compiled product两类ACL实效通过。首ACL策略丢失及后续仅SDDL标记假失败分别保留，不退回rename。
+- **E31**：cross-host-work-20261105T202717Z/product-fixed-access-reconnect.json 与 product-outbound-publication-reconnect.json：产品access同profile固定53611 stop/down/restart，catalog不改两host读取恢复；publish实际OpenSSH确认固定VM45321→Windows自有54559，认证资源发现/目录/读回，stop后端口闭合、同profile再起原consumer配置可用，无写重放。不自建公网/修改防火墙，不代表异地站点。
+- **E32**：shared-write-operation-20261105T214721427159Z/SHARED-WRITE-OPERATION-DELIVERY.md 和 actual-vm-write-reply-loss-original-operation：caller在发前保留hostId+operationId，成功/conflict/unknown区分；files inspect/Prime inspect查询原目标，不误查默认origin。实际Windows→VM110bytes新文件仅写1次，真实响应被fixture丢弃后unknown→原ID查unknown/success→readback；独立VM物理hash8d4a5ea5...2352 exit0，无第二写。消费者type首失败与nativeACL集成失败均保留并已修后复验。
+
 ## 推送后复核结论
 
 原目标未全部符合。可确认真实 Prime→VM 的协作/授权普通用户工作正常；不能把 pending 设备等同注册最终成功。独立复核所指的 Unix 应用/撤销、实际公钥身份+持久观察、direct CLI/API署名与正式服务重启已继续实现并实测其受控范围；不能把这一批新结果倒写为旧版已完成。仍有 Windows 真实管理员应用/SSH令牌正向、工具外修改边界、实际管理员正向、整体系生产恢复及永久服务等缺口。真实六设备、每身份管理员正向与两实际地点/两个可用入口还需获准环境。正常 profile 与相对 edit 定位是本次独立审查后完成的具体修复，不倒写此前模型报告。

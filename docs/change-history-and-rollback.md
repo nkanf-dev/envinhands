@@ -91,3 +91,11 @@ Prime此次依赖回退可revert该提交并用原锁重建独立目录，但会
 Windows全212pass/type0；精确175文件Linux211pass/1skip/type0+hash不变。实际Windows编译proxy通过既有strictSSH加密承载→新VMv2relay/node→真实sshd返回1000/Linux/exit0；原实例未替换。回退必须relay/node/proxy一组回退，不将v2客户端指向旧线协议；保留所有任务/审计数据，不重放未知远端操作。
 
 Prime独立ZIP提交e263f1b已push，tools-manager单ZIP调用替换，tar不变；extractzip移除、显式原锁yauzl/types，成员全预检/新空staging/exclusive写/小工具有界预算。实际六官方布局提取+hash、Win/Linux helper/consumer16pass、正常hooks通过。剩余风险报告继续有效，两项精确overrides仍独立提交，不能倒写成此ZIP阶段全安全通过。
+
+## 正常工作衔接修复：固定入口、出站发布、原操作核对及文件权限
+
+复核后继续修4项具体非硬件缝隙：access可配置固定localPort；publish正式出站SSH-R到受信入口loopback并等待真实转发确认；shared caller发前持有host/operation且成功/conflict/unknown均可核对、inspect复用目标ChangeClient分页；shared CAS保留Unix普通mode/Windows原生访问descriptor。没有增加任务DB、泛隧道框架或自动盲写重试。
+
+Windows原rename确实改变protectedDACL，首观察保留；nativeReplace后ordinarySDDL D:→D:AI导致假unknown（内容已改）亦保留，最终仅规范0x400bookkeeping，其余owner/group/exactDACL/controlflags严格。首次ordinary/protected、native/compiled两路径均正常，消费者9pass/type0。caller早报type0错误明确撤回，Bunfetch属性修复后实际type0；临时publish负控与root全suite重叠215/2明确标concurrentfalsification状态，不当产品回归或最终绿，后续负控仅独立copy。后续sharedcore集成5fail与最终修复分别独立raw，不覆盖。
+
+撤回时需对应还原hostprofile/固定端口引用与nativehelper部署，保留原operation引用、服务audit与文件实际hash；若变更后结果unknown，先inspect/readback而非重放。生产工作服务、原keys/admin/firewall在本阶段未改。拥有的验收入口按PID/profile释放，禁止全局killSSH。

@@ -128,3 +128,63 @@ The main coordinator separately runs a Windows root and a Debian VM root over
 approved encrypted routes for real bidirectional sharing/modification/work.
 Local discovery/two-client fixture passes are not proof of that cross-host deployment,
 SSH/admin readiness, arbitrary NAT traversal, all six devices or OS isolation.
+
+Existing Unix file updates preserve ordinary permission bits (0777), not special
+privilege bits. A nativeLinux0750script read→CASwrite→readback kept0750 in an
+independent owned fixture; new files remain0600. Windows existing-file replacement uses native ReplaceFile (no rename fallback) and verifies owner/group, exact DACL bytes/nullness, and control flags except Windows automatic-inheritance bookkeeping bit0x400. Both ordinary inherited ACL and explicit protected DACL fixtures passed on first replacement; source and compiled product paths were tested. This is independent Windows evidence, not a POSIX-mode inference.
+
+## Normal caller operation references and uncertain responses
+
+`files write [HOST_ID]` and `envinhands_write_shared_file` now choose a fresh
+nonsecret operationId before dispatch and retain the same ID in the signed HTTP
+header. Their JSON receipt includes hostId, operationId and status. Success keeps
+the existing resource/path/beforeSha256/afterSha256/bytes fields. A received409
+is `conflict`; network loss, completion503 or another unconfirmed response is
+`unknown`, never evidence that no file changed. CLI exits1 and Prime returns
+isError for conflict/unknown but still returns the reference. This ID is for
+inspection, not permission or an automatically replayable task identifier.
+
+Use the same selected host:
+
+```text
+<env-command> files inspect HOST_ID
+```
+
+stdin is `{ "operationId": "original-returned-id" }`, with optional `after`
+(nonnegative sequence cursor). Without a catalog, omit HOST_ID and keep the same
+configured service. Prime provides `envinhands_inspect_shared_write` with
+`{hostId,operationId,after?}` (hostId required only with a catalog). Both query
+that selected host's existing ChangeClient log and return only records whose
+operationId matches. The default unrelated control origin is not queried.
+
+Inspection reads up to10 pages of10 records per call. `nextAfter` is the next
+explicit inspection cursor or null once the available log ends. Continue with
+that cursor when present; empty records on an incomplete page do not prove the
+operation never ran. This reuses existing sequence pagination, not a new task DB
+or full-resource watcher. Records are declared shared-bearer observations, not
+cryptographic identity or an execution grant. Correlate the signed intent/outcome,
+actual target/path and returned hashes with a new file read before deciding how
+to reconcile. Unknown response must never cause an automatic second write.
+
+Native fixtures perform a real HTTP file update, discard its actual response in
+the injected client transport, obtain unknown+originalreference, inspect the same
+selected host and independently read disk. They verify one write only and a
+distinct409 result. This is a controlled transport-loss fixture, not a new live
+network outage or paid-model run.
+
+## Outbound service entry and stable client references
+
+`publish PRIVATE_PROFILE` publishes an owned local loopback service to an already
+authorized SSH entry's loopback port, using strict host keys and an actual OpenSSH
+forward-success confirmation. It does not open a public listener or configure
+sshd/firewall. `access PRIVATE_PROFILE` can use fixed `localPort` so the private
+host catalog survives entry restart unchanged. Actual opposite-host authenticated
+catalog/list/read passed before and after each owned entry restart, with no
+write replay. See control-ingress.md and remote-access.md.
+
+Existing file modes and ACLs remain important when collaboration modifies work:
+new files are private by default, existing Unix normal bits preserved, existing
+Windows access descriptor equivalence checked as above. These checks do not
+provide cross-process locks or protection against malicious concurrent local
+writers. A post-replacement verification error means effects may exist; retain
+hostId/operationId, inspect the selected host and read back, never blindly retry.

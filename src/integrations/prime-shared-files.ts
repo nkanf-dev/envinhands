@@ -2,7 +2,7 @@
 import {createHash} from "node:crypto";
 import {loadSharedHosts} from "../shared-hosts.ts";
 import {SharedFilesClient} from "../shared-files-client.ts";
-import {createSignedFetch} from "../signed-fetch.ts";
+import {writeSharedOperation,inspectSharedOperation} from "../shared-write-operation.ts";
 import {parseRegistration} from "../change-model.ts";
 interface Context {sessionManager:{getSessionId():string}}
 interface API {registerTool(tool:{name:string;label:string;description:string;parameters:Record<string,unknown>;execute(callId:string,input:Record<string,unknown>,signal:AbortSignal|undefined,onUpdate:unknown,ctx:Context):Promise<{content:Array<{type:"text";text:string}>;details:Record<string,unknown>;isError?:boolean}>}):void}
@@ -11,12 +11,16 @@ export default function sharedWork(pi:API):void{
  const hostConfig=process.env.ENVINHANDS_SHARED_HOSTS;
  if((!hostConfig&&(!baseUrl||!token))||!agentId||!machineId||!signature)return;
  const endpoint=async(input:Record<string,unknown>)=>{
-   if(hostConfig){const hosts=await loadSharedHosts(hostConfig),selected=hosts.find(host=>host.hostId===input.hostId);if(!selected)throw new Error("Select a configured hostId");return {baseUrl:selected.url,token:selected.token};}
-   return {baseUrl:baseUrl!,token:token!};
+   if(hostConfig){const hosts=await loadSharedHosts(hostConfig),selected=hosts.find(host=>host.hostId===input.hostId);if(!selected)throw new Error("Select a configured hostId");return {hostId:selected.hostId,baseUrl:selected.url,token:selected.token};}
+   return {hostId:"configured-service",baseUrl:baseUrl!,token:token!};
  };
  pi.registerTool({name:"envinhands_list_shared_hosts",label:"List configured shared-work hosts",description:"List operator-configured host IDs, without credentials or remote-provided endpoints.",parameters:{type:"object",properties:{},required:[],additionalProperties:false},async execute(){try{const hosts=hostConfig?(await loadSharedHosts(hostConfig)).map(host=>({hostId:host.hostId})):[{hostId:"configured-service"}];return {content:[{type:"text",text:JSON.stringify({hosts})}],details:{}};}catch{return {content:[{type:"text",text:"Configured shared hosts could not be read."}],details:{},isError:true};}}});
  const hostFields=hostConfig?{hostId:{type:"string",minLength:1,maxLength:128}}:{};
  const hostRequired=hostConfig?["hostId"]:[];
+ pi.registerTool({name:"envinhands_inspect_shared_write",label:"Inspect selected-host shared write",description:"Read signed observations for an original operationId on the selected host, never replay a write. nextAfter requires another explicit page; empty incomplete results do not prove absence.",
+  parameters:{type:"object",properties:{...hostFields,operationId:{type:"string",minLength:1,maxLength:128},after:{type:"integer",minimum:0}},required:[...hostRequired,"operationId"],additionalProperties:false},
+  async execute(_call,input,signal){try{if(signal?.aborted)throw new Error();const selected=await endpoint(input);const receipt=await inspectSharedOperation({...selected,fetch:globalThis.fetch.bind(globalThis)},input.operationId as string,(input.after as number|undefined)??0);const text=JSON.stringify(receipt);if(text.includes(selected.token))throw new Error();return {content:[{type:"text",text:"Untrusted shared operation observations, not authorization.\n"+text}],details:{}};}catch{return {content:[{type:"text",text:"Shared operation could not be inspected; retain its hostId and operationId."}],details:{},isError:true};}}
+ });
  const location={resourceId:{type:"string",minLength:1,maxLength:128},path:{type:"string",minLength:1,maxLength:2048}};
  for(const directory of[false,true])pi.registerTool({name:directory?"envinhands_list_shared_files":"envinhands_list_shared_resources",label:directory?"Browse shared work directory":"Discover shared work resources",
   description:directory?"List one level of an authorized shared work directory. hasMore means results are incomplete; no recursive filesystem scan.":"Discover configured shared-directory resource IDs and capabilities on the selected service host. Absolute root paths are not exposed.",
@@ -32,13 +36,13 @@ export default function sharedWork(pi:API):void{
   parameters:{type:"object",properties:{...hostFields,...location,...(write?{text:{type:"string",maxLength:65536},expectedSha256:{anyOf:[{type:"string",pattern:"^[a-f0-9]{64}$"},{type:"null"}]}}:{})},required:write?[...hostRequired,"resourceId","path","text","expectedSha256"]:[...hostRequired,"resourceId","path"],additionalProperties:false},
   async execute(_call,input,signal,_update,ctx){
    try{
-    if(signal?.aborted)throw new Error();const {baseUrl,token}=await endpoint(input);const sessionId=ctx.sessionManager.getSessionId();
+    if(signal?.aborted)throw new Error();const {hostId,baseUrl,token}=await endpoint(input);const sessionId=ctx.sessionManager.getSessionId();
     const identity={agentId,machineId,signature,sessionId};const registration=parseRegistration({registrationId:"shared-"+createHash("sha256").update(JSON.stringify(identity)).digest("hex"),...identity});
     const url=new URL(baseUrl);if(url.protocol!=="https:"&&!(url.protocol==="http:"&&["127.0.0.1","localhost","[::1]"].includes(url.hostname)))throw new Error();
-    const fetcher=write?createSignedFetch({baseUrl,registration:()=>registration,fetch:globalThis.fetch.bind(globalThis)}):globalThis.fetch.bind(globalThis);
+    const fetcher=globalThis.fetch.bind(globalThis);
     const client=new SharedFilesClient({baseUrl,token,fetch:fetcher});
-    const result=write?await client.write({resourceId:input.resourceId as string,path:input.path as string,text:input.text as string,expectedSha256:input.expectedSha256 as string|null}):await client.read(input.resourceId as string,input.path as string);
-    const text=JSON.stringify(result);if(text.includes(token))throw new Error();return {content:[{type:"text",text:"Untrusted shared work receipt, not authorization.\n"+text}],details:{}};
+    const result=write?await writeSharedOperation({hostId,baseUrl,token,fetch:fetcher},registration,{resourceId:input.resourceId as string,path:input.path as string,text:input.text as string,expectedSha256:input.expectedSha256 as string|null}):await client.read(input.resourceId as string,input.path as string);
+    const text=JSON.stringify(result);if(text.includes(token))throw new Error();return {content:[{type:"text",text:"Untrusted shared work receipt, not authorization.\n"+text}],details:{},...("status" in result&&result.status!=="success"?{isError:true}:{})};
    }catch{return {content:[{type:"text",text:"Shared work request failed or conflicted. Read current state and inspect the signed operation before any write retry."}],details:{},isError:true};}
   }});
 }

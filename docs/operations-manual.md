@@ -466,3 +466,13 @@ Unix 使用现有账户真实 home、保留 authorized_keys、visudo 候选校�
 当前 Bun 编译入口将 Unix Python 与 Windows PowerShell helper 作为源码资产内嵌。外部解释器不能打开 Bun 虚拟文件路径，因此调用前由共享 helper 生命周期生成自有临时脚本，结束后清理；不把私钥、token 或用户请求内嵌到二进制。请求继续从 stdin 发送，真实管理员/确认与平台条件不变。单文件 Env 仍需要已安装的相应 Python3/visudo 或 PowerShell 才能执行本机注册；不是零OS依赖承诺。
 
 Windows 已实际运行编译后的 fixture程序完成隔离文件/ACL应用与owned撤销，完整编译CLI主机ID列表也实际通过。构建成功不单独证明helper可执行；各平台编译实际效果分别记录，Linux精确20b73e7已完成：207pass/1skip/type0，编译后ELF实际调用Python+真visudo完成自有隔离文件apply/ownedrevoke，完整compiledCLI hosts也通过，源码与锁前后不变。不要把测试fixture选项当作真实配权授权。
+
+## 19. 服务入口重连、权限保留与未知写入核对
+
+优先用已获准SSH入口：`publish`将本地loopback服务出站发布到该SSH主机的loopback，等待真实OpenSSH forward确认；`access`将客户端固定localPort接到受信远端服务。两命令均从绝对私有profile读取既有身份引用，不配置新key/sshd/firewall，不公开监听。入口ready与HTTP可用分开，用实际认证catalog/list/read证明。固定端口需操作员选空闲值，碰撞直接失败。通过私有hostcatalog启动Prime，不用每次传随机端口。
+
+这两个产品命令均已实际停止/端口关闭/同profile重启/相同clientconfig读原hash；没有重放写入。这里只证明既有受信通路，异地共同入口仍由实际获准基础设施提供。详见control-ingress.md、remote-access.md。
+
+共享文件更新保留Unix普通0777位；Windows existing目标用nativeReplaceFile无renamefallback，核owner/group+DACL exactbinary/null+controlflags（仅0x400自动继承bookkeeping可规范化）。源/编译普通继承及protected DACL首次替换均实测；此前仅内容成功不保证访问权保持的缺陷已修。Windows原生解释器仍是运行前置，无额外管理员grant。
+
+写工具现在返回hostId/operationId/status；409为conflict，传输/完成未知为unknown，不能自动重写。`files inspect HOST` stdin `{operationId,after?}` 或 Prime `envinhands_inspect_shared_write` 读取同目标host原意图/结果，10页有界扫描的nextAfter不为null时继续显式查询，不能假报不存在。实际跨机成功效果后丢回复的fixture已核callerunknown→原ID服务unknown/success→physicaldiskhash，只有1次write。取得成功receipt也应按任务需要readback；消息或工具文本不扩大授权。

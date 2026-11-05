@@ -42,3 +42,12 @@ test("close terminates an active owned child and rejects unsupported remote dest
   await childStarted; await bridge.close(); await closed;
   assert.ok(child && (child.exitCode !== null || child.signalCode !== null));
 });
+
+test("a fixed owned local access port can restart without changing client URL",async()=>{
+ const options={host:"control.example",user:"agent",destinationHost:"127.0.0.1" as const,destinationPort:8787};
+ const first=await startRemoteAccess(options);const port=first.port,url=first.url;await first.close();
+ const second=await startRemoteAccess({...options,localPort:port});try{assert.equal(second.port,port);assert.equal(second.url,url);
+  await assert.rejects(startRemoteAccess({...options,localPort:port}));
+ }finally{await second.close();}
+ await assert.rejects(startRemoteAccess({...options,localPort:65536}));
+});

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 /** Explicit CLI entry point. Importing this module never starts a listener. */
+import {runRemotePublishCli} from "./remote-publish-cli.ts";
 import { runFilesCli } from "./files-cli.ts";
 import { runProvisionCli } from "./provision-cli.ts";
 import { signedCliFetch } from "./cli-registration.ts";
@@ -19,11 +20,14 @@ import { buildTmuxRelayArgv } from "./session/tmux-relay.ts";
 import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
 
-const help = `Usage: bun src/cli.ts <files hosts|files resources [HOST]|files list [HOST]|files read [HOST]|files write [HOST]|provision|service CONFIG_JSON|prime-profile ENV_ROOT [PRIME_ROOT]|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: bun src/cli.ts <publish PROFILE_JSON|files hosts|files resources [HOST]|files list [HOST]|files read [HOST]|files write [HOST]|files inspect [HOST]|provision|service CONFIG_JSON|prime-profile ENV_ROOT [PRIME_ROOT]|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
+publish: outbound strict SSH reverse publication of a local loopback service to
+         approved SSH host loopback only; private JSON profile, no public bind.
 files: optional HOST selects private ENVINHANDS_SHARED_HOSTS catalog; hosts lists IDs.
        Discover selected roots, list one directory level, read/write work files; JSON resourceId/path, write also text and
        expectedSha256 (null only creates missing file); signed writes, no blind overwrite.
+       write returns hostId/operationId/status; inspect reads that original operation.
 provision: explicit local owner-confirmed OS key/admin apply or revoke JSON stdin;
            requires existing administrator context, identity env and durable spool.
 service: starts persistent control service from private absolute JSON config;
@@ -255,6 +259,7 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
   const deps = { ...defaults, ...overrides };
   const error = (text: string) => deps.stderr.write(text + "\n");
   const [command, id] = args;
+  if (command === "publish") return runRemotePublishCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
   if (command === "service") return runServiceCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
   if (command === "prime-profile") return runPrimeProfileCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)});
   if (command === "access") return runRemoteAccessCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);

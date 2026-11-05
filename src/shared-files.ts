@@ -1,3 +1,4 @@
+import {replaceWindowsFile} from "./windows-file-replace.ts";
 /** Explicit shared roots, ordinary UTF-8 files and optimistic writes; not an OS sandbox. */
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -109,16 +110,22 @@ export function createSharedFiles(options: { roots: Record<string, string> }) {
         const before = await contents(location.target), beforeSha256 = before === null ? null : sharedFileHash(before);
         if (beforeSha256 !== input.expectedSha256) throw new SharedFileError(409, "Shared file changed; reread before writing");
         const bytes = Buffer.from(input.text, "utf8"), temporary = join(location.parent, `.envinhands-${randomUUID()}.tmp`);
+        const existingMode = before === null ? undefined : (await lstat(location.target)).mode & 0o777;
         const file = await open(temporary, "wx", 0o600);
         try {
-          try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
+          try {
+            await file.writeFile(bytes);
+            if (existingMode !== undefined && process.platform !== "win32") await file.chmod(existingMode);
+            await file.sync();
+          } finally { await file.close(); }
           const checked = await locate(input.resourceId, input.path);
           if (checked.target !== location.target) throw new SharedFileError(409, "Shared path changed; reread before writing");
           const latest = await contents(location.target);
           if ((latest === null ? null : sharedFileHash(latest)) !== beforeSha256) throw new SharedFileError(409, "Shared file changed; reread before writing");
           if (before === null) {
             try { await link(temporary, location.target); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new SharedFileError(409, "Shared file already exists"); throw error; }
-          } else { await rename(temporary, location.target); }
+          } else if (process.platform === "win32") { await replaceWindowsFile(temporary, location.target); }
+          else { await rename(temporary, location.target); }
           await syncDirectory(location.parent);
         } finally { try { await unlink(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
         return { resourceId: input.resourceId, path: input.path, beforeSha256, afterSha256: sharedFileHash(bytes), bytes: bytes.length };

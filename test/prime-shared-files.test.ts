@@ -26,10 +26,22 @@ test("Prime shared-work tools read and change real selected files using actual s
   try {
    assert.notEqual(written.isError,true);assert.equal(await readFile(join(root,"work.txt"),"utf8"),"agent modification");
    const next=JSON.parse(written.content[0].text.split("\n")[1]);
+   assert.equal(next.status,"success");assert.equal(next.hostId,"configured-service");
+   const inspected=await tools.get("envinhands_inspect_shared_write")!.execute("inspect",{operationId:next.operationId},undefined,undefined,ctx);
+   assert.notEqual(inspected.isError,true);const observed=JSON.parse(inspected.content[0].text.split("\n")[1]);assert.deepEqual(observed.records.map((r:{outcome:string})=>r.outcome),["unknown","success"]);
    const second=await tools.get("envinhands_write_shared_file")!.execute("second",{resourceId:"work",path:"work.txt",text:"second session modification",expectedSha256:next.afterSha256},undefined,undefined,{sessionManager:{getSessionId:()=>"second-executing-session"}});
    assert.notEqual(second.isError,true);
+   const secondReceipt=JSON.parse(second.content[0].text.split("\n")[1]);
+   const previousFetch=globalThis.fetch;let writes=0;
+   try {
+    globalThis.fetch=Object.assign(async(value:Parameters<typeof fetch>[0],init?:Parameters<typeof fetch>[1])=>{const response=await previousFetch(value,init);if(init?.method==="POST"&&new URL(String(value)).pathname==="/v1/shared-files"){writes++;await response.arrayBuffer();throw Error("actual response deliberately lost");}return response;},previousFetch);
+    const uncertain=await tools.get("envinhands_write_shared_file")!.execute("uncertain",{resourceId:"work",path:"work.txt",text:"once despite lost reply",expectedSha256:secondReceipt.afterSha256},undefined,undefined,ctx);
+    assert.equal(uncertain.isError,true);const reference=JSON.parse(uncertain.content[0].text.split("\n")[1]);assert.equal(reference.status,"unknown");assert.equal(reference.hostId,"configured-service");
+    const checked=await tools.get("envinhands_inspect_shared_write")!.execute("inspect-lost",{operationId:reference.operationId},undefined,undefined,ctx);
+    const actual=JSON.parse(checked.content[0].text.split("\n")[1]);assert.deepEqual(actual.records.map((r:{outcome:string})=>r.outcome),["unknown","success"]);assert.equal(writes,1);assert.equal(await readFile(join(root,"work.txt"),"utf8"),"once despite lost reply");
+   } finally {globalThis.fetch=previousFetch;}
    const store=createChangeStore(join(root,"db.sqlite"));try{const records=store.list(0,100).records.filter(r=>r.outcome==="success");
-    assert.deepEqual(records.map(r=>r.registration.sessionId),["real-fixture-session","second-executing-session"]);
+    assert.deepEqual(records.map(r=>r.registration.sessionId),["real-fixture-session","second-executing-session","real-fixture-session"]);
     assert.ok(records.every(r=>r.registration.agentId==="file-agent"));
    }finally{store.close();}
   }finally{dispose();}

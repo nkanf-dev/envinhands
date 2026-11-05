@@ -1,3 +1,4 @@
+import { RELAY_VERSION, REGISTERED, READY, FIN, FIN_ACK, relayControl, relayEndpoint } from "./relay-protocol.ts";
 /**
  * TEST PROTOTYPE ONLY. A shared bearer secret gives every holder full access to
  * every node, including the ability to impersonate one. No per-node or user
@@ -14,12 +15,11 @@
  * requests a session; GET /channel?id=UUID attaches the requested node channel.
  * All upgrades require Authorization: Bearer <secret>. A client must wait for
  * the text frame "ready" before sending binary frames. Afterwards only binary
- * frames carry opaque bytes. A close on either side closes the whole session;
- * TCP half-close is not supported. A normal WebSocket close drains accepted
- * client bytes to TCP before FIN, but cannot return data sent after that close.
- * Errors, buffer overflow and drain timeout abort rather than claim delivery.
- * A normal close is not an acknowledgement that the remote application read data.
- * Once the WebSocket is closed, a later drain failure cannot be reported to it.
+ * frames carry opaque bytes. Every endpoint requires v=2 with registered-v2/ready-v2.
+ * Directional fin/fin-ack preserve replies after EOF. Only the relay closes the
+ * session normally after both FINs and drain acknowledgements. An unexpected
+ * close, buffer overflow or completion timeout aborts, never claims delivery.
+ * A FIN acknowledgement is not proof the remote application read or handled data.
  */
 
 const ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
@@ -43,6 +43,7 @@ type ServerSocket = import("bun").ServerWebSocket<SocketData>;
 type Session = {
   id: string; node: string; client: ServerSocket; channel?: ServerSocket;
   ready: boolean; timer: ReturnType<typeof setTimeout>;
+  clientFin: boolean; nodeFin: boolean; clientAck: boolean; nodeAck: boolean;
 };
 
 export interface RelayOptions {
@@ -108,6 +109,7 @@ export function createRelayServer(options: RelayOptions) {
       if (++requests > maxRequestsPerSecond) return new Response("Request limit exceeded", { status: 429, headers: { "Retry-After": "1" } });
       if (req.headers.get("authorization") !== `Bearer ${options.secret}`) return new Response("Unauthorized", { status: 401 });
       const url = new URL(req.url);
+      if (url.searchParams.getAll("v").length !== 1 || url.searchParams.get("v") !== RELAY_VERSION) return new Response("Relay protocol v2 required", { status: 400 });
       let data: SocketData;
       if (url.pathname === "/node") {
         const id = url.searchParams.get("id") ?? "";
@@ -159,18 +161,18 @@ export function createRelayServer(options: RelayOptions) {
         if (role === "node") {
           if (nodes.has(id)) { ws.close(1008, "Node already registered"); return; }
           nodes.set(id, ws);
-          if (!sendRelayFrame(ws, "registered")) ws.close(1011, "Control send failed");
+          if (!sendRelayFrame(ws, REGISTERED)) ws.close(1011, "Control send failed");
         } else if (role === "client") {
           const node = nodes.get(id);
           if (!node) { ws.close(1011, "Node unavailable"); return; }
           const sessionId = crypto.randomUUID();
-          const session: Session = { id: sessionId, node: id, client: ws, ready: false,
+          const session: Session = { id: sessionId, node: id, client: ws, ready: false, clientFin: false, nodeFin: false, clientAck: false, nodeAck: false,
             timer: setTimeout(() => end(sessionId), timeout) };
           sessions.set(sessionId, session);
           ws.data.sessionReserved = false;
           // Set before sending: a synchronous failure must still clean up this session.
           ws.data.id = sessionId;
-          if (!sendRelayFrame(node, JSON.stringify({ type: "connect", id: sessionId }))) end(sessionId);
+          if (!sendRelayFrame(node, JSON.stringify({ type: "connect", id: sessionId, version: 2 }))) end(sessionId);
         } else {
           const session = sessions.get(id);
           if (!session || session.channel) { ws.close(1008, "Unknown channel"); return; }
@@ -182,14 +184,30 @@ export function createRelayServer(options: RelayOptions) {
         if (role === "node") { ws.close(1008, "Unexpected control message"); return; }
         const s = sessions.get(id);
         if (!s || (role === "channel" ? s.channel !== ws : s.client !== ws)) { ws.close(); return; }
-        if (role === "channel" && !s.ready && message === "ready") {
+        if (role === "channel" && !s.ready && message === READY) {
           s.ready = true;
           clearTimeout(s.timer);
-          if (!sendRelayFrame(s.client, "ready")) end(id);
+          if (!sendRelayFrame(s.client, READY)) end(id);
           return;
         }
-        if (!s.ready || typeof message === "string" || !s.channel) { end(id); return; }
-        if (message.byteLength && !sendRelayFrame(role === "client" ? s.channel : s.client, message)) end(id, 1011, "Relay buffer exceeded");
+        if (!s.ready || !s.channel) { end(id); return; }
+        const peer = role === "client" ? s.channel : s.client;
+        if (typeof message === "string") {
+          const frame = relayControl(message);
+          if (frame === FIN) {
+            if (role === "client" ? s.clientFin : s.nodeFin) { end(id); return; }
+            if (!s.clientFin && !s.nodeFin) s.timer = setTimeout(() => end(id, 1011, "FIN completion timed out"), DRAIN_TIMEOUT_MS);
+            if (role === "client") s.clientFin = true; else s.nodeFin = true;
+          } else if (frame === FIN_ACK) {
+            if (role === "client" ? !s.nodeFin || s.clientAck : !s.clientFin || s.nodeAck) { end(id); return; }
+            if (role === "client") s.clientAck = true; else s.nodeAck = true;
+          } else { end(id); return; }
+          if (!sendRelayFrame(peer, message)) { end(id); return; }
+          if (s.clientFin && s.nodeFin && s.clientAck && s.nodeAck) end(id, 1000, "");
+          return;
+        }
+        if (role === "client" ? s.clientFin : s.nodeFin) { end(id); return; }
+        if (message.byteLength && !sendRelayFrame(peer, message)) end(id, 1011, "Relay buffer exceeded");
       },
       close(ws, code) {
         sockets.delete(ws);
@@ -203,8 +221,8 @@ export function createRelayServer(options: RelayOptions) {
         } else {
           const s = sessions.get(id);
           if (s && (role === "client" ? s.client === ws : s.channel === ws)) {
-            const normal = code === 1000 || code === 1005;
-            end(id, normal ? 1000 : 1011, normal ? "" : "Peer closed abnormally");
+            // A peer close is never the v2 completion owner; completed sessions were already removed by end().
+            end(id, 1011, "Peer closed before directional completion");
           }
         }
       },
@@ -243,10 +261,7 @@ export function startNodeClient(options: NodeClientOptions) {
   const base = new URL(options.relayUrl);
   if (base.protocol !== "ws:" && base.protocol !== "wss:") throw new Error("Expected ws:// or wss:// relay URL");
   const headers = { Authorization: `Bearer ${options.secret}` };
-  function url(path: string, key: string, value: string) {
-    const u = new URL(path, base); u.searchParams.set(key, value); return u.toString();
-  }
-  const control = new WebSocket(url("/node", "id", options.nodeId), { headers });
+  const control = new WebSocket(relayEndpoint(base.toString(), "/node", "id", options.nodeId), { headers });
   const channels = new Set<() => void>();
   let stopped = false;
   let registered = false;
@@ -265,113 +280,120 @@ export function startNodeClient(options: NodeClientOptions) {
   }
   function connect(id: string) {
     if (stopped || channels.size >= 256) return;
-    const ws = new WebSocket(url("/channel", "id", id), { headers });
+    const ws = new WebSocket(relayEndpoint(base.toString(), "/channel", "id", id), { headers });
     ws.binaryType = "arraybuffer";
     let tcp: import("bun").Socket | undefined;
-    let closed = false;
-    let draining = false;
-    let finSent = false;
+    let closed = false, tcpReady = false, remoteFin = false, localFin = false, localFinAck = false, remoteFinAck = false, tcpClosed = false;
     let drainTimer: ReturnType<typeof setTimeout> | undefined;
-    let pending: Uint8Array[] = [];
-    let pendingBytes = 0;
-    // The SSH server may send its banner immediately on TCP connect. Do not
-    // forward it until the channel's ready marker has been sent.
-    let tcpReady = false;
-    let early: Uint8Array[] = [];
-    let earlyBytes = 0;
-    function sendTcpData(data: Uint8Array) {
-      if (draining || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount + data.byteLength + 14 * Math.ceil(data.byteLength / MAX_FRAME) > MAX_BUFFER) { abort(); return; }
-      try {
-        for (let offset = 0; offset < data.byteLength; offset += MAX_FRAME)
-          ws.send(data.subarray(offset, offset + MAX_FRAME));
-      } catch { abort(); }
-    }
+    let pending: Uint8Array[] = [], early: Uint8Array[] = [];
+    let pendingBytes = 0, earlyBytes = 0;
+    const boundFinish = () => { if (!drainTimer) drainTimer = setTimeout(abort, DRAIN_TIMEOUT_MS); };
     function finish() {
       if (closed) return;
       closed = true; channels.delete(abort);
       if (drainTimer) clearTimeout(drainTimer);
-      pending = []; pendingBytes = 0; early = []; earlyBytes = 0;
+      pending = []; early = []; pendingBytes = earlyBytes = 0;
     }
     function abort() {
       if (closed) return;
-      finish();
-      try { tcp?.terminate(); } catch {}
+      finish(); try { tcp?.terminate(); } catch {}
       try { ws.close(4000, "Session aborted"); } catch {}
     }
-    channels.add(abort);
+    function send(data: string | Uint8Array): boolean {
+      const bytes = typeof data === "string" ? data.length : data.byteLength;
+      if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount + bytes + 14 > MAX_BUFFER) { abort(); return false; }
+      try { ws.send(data); return true; } catch { abort(); return false; }
+    }
+    function sendTcpData(data: Uint8Array) {
+      if (closed || localFin) { abort(); return; }
+      for (let offset = 0; offset < data.byteLength; offset += MAX_FRAME) {
+        if (!send(data.subarray(offset, offset + MAX_FRAME))) return;
+      }
+    }
+    function sendLocalFin() {
+      if (!tcpReady || closed || localFin) return;
+      localFin = true; boundFinish(); send(FIN);
+    }
     function flush() {
-      if (!tcp || closed) return;
+      if (!tcp || closed || remoteFinAck) return;
       try {
         while (pending.length) {
-          const first = pending[0];
-          const count = tcp.write(first);
+          const first = pending[0]!, count = tcp.write(first);
           if (count < 0) { abort(); return; }
           if (count === 0) return;
           pendingBytes -= count;
           if (count < first.byteLength) { pending[0] = first.subarray(count); return; }
           pending.shift();
         }
-        if (draining && !finSent) {
-          finSent = true;
-          // All bytes are accepted by the kernel. FIN preserves their order.
-          tcp.end();
-          // No return path exists after WebSocket close. Keep a bounded lifetime.
+        if (remoteFin) {
+          // Set before end(): normal TCP close can precede WebSocket acknowledgement.
+          remoteFinAck = true;
+          tcp.shutdown(false); send(FIN_ACK);
         }
       } catch { abort(); }
     }
-    function gracefulClose() {
-      if (closed || draining) return;
-      if (!tcp) { abort(); return; }
-      draining = true;
-      drainTimer = setTimeout(abort, DRAIN_TIMEOUT_MS);
-      flush();
-    }
+    channels.add(abort);
+    let earlyEnd = false;
     ws.onopen = () => {
-      void Bun.connect({
-        hostname: options.sshHost ?? "127.0.0.1", port,
+      void Bun.connect({ hostname: options.sshHost ?? "127.0.0.1", port, allowHalfOpen: true,
         socket: {
           data(_socket, data) {
-            if (closed || draining) return; // WebSocket cannot carry a TCP half-close response.
+            if (closed) return;
             if (!tcpReady) {
               if (earlyBytes + data.byteLength > MAX_BUFFER) { abort(); return; }
               early.push(new Uint8Array(data)); earlyBytes += data.byteLength;
             } else sendTcpData(data);
           },
+          end() { if (!tcpReady) earlyEnd = true; else sendLocalFin(); },
           drain() { flush(); },
-          close() {
-            if (draining && pendingBytes === 0) finish();
+          close(_socket, error) {
+            if (error) { abort(); return; }
+            tcpClosed = true;
+            if (closed) return;
+            // Bun may report close rather than end when both TCP directions have finished.
+            if (remoteFinAck) sendLocalFin();
             else abort();
           },
-          error() { abort(); },
-          connectError() { abort(); },
+          error() { abort(); }, connectError() { abort(); },
         },
-      }).then((socket) => {
+      }).then(socket => {
         if (closed) { socket.terminate(); return; }
         tcp = socket;
-        try { ws.send("ready"); } catch { abort(); return; }
+        if (!send(READY)) return;
         tcpReady = true;
-        for (const data of early) { sendTcpData(data); if (closed) break; }
+        for (const bytes of early) { sendTcpData(bytes); if (closed) return; }
         early = []; earlyBytes = 0;
+        if (earlyEnd) sendLocalFin();
       }).catch(abort);
     };
-    ws.onmessage = (event) => {
-      if (!(event.data instanceof ArrayBuffer) || !tcp || draining) { abort(); return; }
+    ws.onmessage = event => {
+      if (!tcp || closed) { abort(); return; }
+      if (typeof event.data === "string") {
+        const frame = relayControl(event.data);
+        if (frame === FIN && !remoteFin) { remoteFin = true; boundFinish(); flush(); }
+        else if (frame === FIN_ACK && localFin && !localFinAck) localFinAck = true;
+        else abort();
+        return;
+      }
+      if (!(event.data instanceof ArrayBuffer) || remoteFin || tcpClosed) { abort(); return; }
       const bytes = new Uint8Array(event.data);
       if (pendingBytes + bytes.byteLength > MAX_BUFFER) { abort(); return; }
       if (bytes.byteLength) { pending.push(bytes); pendingBytes += bytes.byteLength; flush(); }
     };
     ws.onerror = abort;
-    ws.onclose = (event) => {
-      if (event.code === 1000 || event.code === 1005) gracefulClose();
-      else abort();
+    ws.onclose = event => {
+      if (closed) return;
+      if ((event.code === 1000 || event.code === 1005) && localFin && remoteFin && localFinAck && remoteFinAck && pendingBytes === 0) {
+        finish(); if (!tcpClosed) { try { tcp?.end(); } catch {} }
+      } else abort();
     };
   }
   control.onmessage = (event) => {
-    if (event.data === "registered" && !registered) { registered = true; resolveReady(); return; }
+    if (event.data === REGISTERED && !registered) { registered = true; resolveReady(); return; }
     if (!registered || typeof event.data !== "string") { stop(); return; }
     try {
       const msg = JSON.parse(event.data);
-      if (msg.type !== "connect" || typeof msg.id !== "string" || !/^[0-9a-f-]{36}$/i.test(msg.id)) { stop(); return; }
+      if (msg.type !== "connect" || msg.version !== 2 || typeof msg.id !== "string" || !/^[0-9a-f-]{36}$/i.test(msg.id)) { stop(); return; }
       connect(msg.id);
     } catch { stop(); }
   };

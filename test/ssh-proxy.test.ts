@@ -57,7 +57,7 @@ describe("SSH stdio proxy integration", () => {
     const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {
       open(socket) { socket.write(banner); },
       data(socket, data) { socket.write(data); },
-      error() {},
+      end(socket) { socket.shutdown(); }, error() {},
     } });
     cleanup.push(() => tcp.stop(true));
     const base = startRelay();
@@ -71,7 +71,7 @@ describe("SSH stdio proxy integration", () => {
     io.input.write(payload);
     expect(await io.received(banner.length + payload.length)).toEqual(Buffer.concat([banner, payload]));
     io.input.end();
-    expect((await withTimeout(result, "EOF")).error).toBeDefined();
+    expect((await withTimeout(result, "EOF")).error).toBeUndefined();
   });
 
   test("drains 1 MiB to a slow TCP receiver before input EOF", async () => {
@@ -94,8 +94,7 @@ describe("SSH stdio proxy integration", () => {
     // EOF can arrive before WebSocket readiness; bytes must not be discarded.
     io.input.end(expected);
     const settled = await withTimeout(result, "input EOF");
-    expect(settled.error).toBeDefined();
-    expect(String(settled.error)).toMatch(/half.close|EOF/i);
+    expect(settled.error).toBeUndefined();
     await withTimeout(ended, "TCP FIN after drain");
     expect(Buffer.concat(chunks)).toEqual(expected);
   }, 10000);
@@ -124,8 +123,54 @@ describe("SSH stdio proxy integration", () => {
     const base = startRelay();
     await startNode(base, tcp.port);
     const io = streams();
-    const proxy = startSshProxy({ relayUrl: base, nodeId: "local", secret, input: io.input, output: io.output });
+    const proxy = startSshProxy({ relayUrl: base, nodeId: "local", secret, input: io.input, output: io.output, onRemoteEnd: () => io.input.end() });
     const result = proxy.then(() => "resolved", () => "rejected");
     expect(["resolved", "rejected"]).toContain(await withTimeout(result, "remote close"));
   });
+});
+
+
+test("half-close returns the complete response produced only after request EOF", async () => {
+  const request = Buffer.alloc(1024 * 1024, 37), response = Buffer.alloc(1024 * 1024, 91), chunks: Buffer[] = [];
+  let sawEof = false, sent = 0;
+  const pump = (s: Bun.Socket) => {
+    while (sent < response.length) { const written = s.write(response.subarray(sent)); if (written <= 0) return; sent += written; }
+    s.shutdown();
+  };
+  const tcp = Bun.listen({hostname:"127.0.0.1",port:0,allowHalfOpen:true,socket:{
+    data(_s,b){chunks.push(Buffer.from(b));},
+    end(s){sawEof=true;expect(Buffer.concat(chunks)).toEqual(request);pump(s);},
+    drain(s){if(sawEof && sent < response.length)pump(s);},error(){}
+  }});
+  cleanup.push(()=>tcp.stop(true));const base=startRelay();await startNode(base,tcp.port);
+  const input = new PassThrough(), received: Buffer[] = [];
+  const output = new Writable({highWaterMark:1024,write(chunk:Buffer,_encoding,callback){received.push(Buffer.from(chunk));setImmediate(callback);}});
+  cleanup.push(()=>{input.destroy();output.destroy();});
+  const io={input,output};
+  const result=startSshProxy({relayUrl:base,nodeId:"local",secret,input:io.input,output:io.output});
+  const settled=result.then(()=>true,()=>false);io.input.end(request);
+  expect(await withTimeout(settled,"bidirectional FIN")).toBe(true);
+  expect(Buffer.concat(received)).toEqual(response);expect(sawEof).toBe(true);expect(sent).toBe(response.length);
+  expect(io.output.writableEnded).toBe(false);
+});
+
+test("remote FIN keeps the request direction open until the caller sends its final bytes", async()=>{
+  const response=Buffer.from("server finished writing"),tail=Buffer.from("client sends after remote FIN");const chunks:Buffer[]=[];
+  let resolveEnd!:()=>void;const ended=new Promise<void>(r=>resolveEnd=r);
+  const tcp=Bun.listen({hostname:"127.0.0.1",port:0,allowHalfOpen:true,socket:{open(s){s.write(response);s.shutdown();},data(_s,b){chunks.push(Buffer.from(b));},end(){resolveEnd();},close(){resolveEnd();},error(){}}});
+  cleanup.push(()=>tcp.stop(true));const base=startRelay();await startNode(base,tcp.port);const io=streams();let callbacks=0;
+  const result=startSshProxy({relayUrl:base,nodeId:"local",secret,input:io.input,output:io.output,
+    onRemoteEnd(){callbacks++;io.input.end(tail);}});
+  const settled=result.then(()=>true,()=>false);
+  expect(await io.received(response.length)).toEqual(response);expect(await withTimeout(settled,"remote FIN then local FIN")).toBe(true);
+  await withTimeout(ended,"server received final client EOF");expect(Buffer.concat(chunks)).toEqual(tail);expect(callbacks).toBe(1);
+});
+
+
+test("v2 proxy refuses a legacy ready marker rather than silently falling back",async()=>{
+ const server=Bun.serve({hostname:"127.0.0.1",port:0,fetch(request,host){return host.upgrade(request)?undefined:new Response("upgrade required",{status:400});},websocket:{open(ws){ws.send("ready");},message(){}}});
+ const input=new PassThrough(),output=new PassThrough();
+ try{const result=startSshProxy({relayUrl:`ws://127.0.0.1:${server.port}`,nodeId:"legacy",secret,input,output});
+  await expect(result).rejects.toThrow("Invalid relay ready message");
+ }finally{input.destroy();output.destroy();server.stop(true);}
 });

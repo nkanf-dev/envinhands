@@ -11,7 +11,7 @@ function startRelay(setupTimeoutMs = 1000, limits: Partial<Parameters<typeof cre
   return { relay, base: `ws://127.0.0.1:${relay.port}` };
 }
 function connect(base: string, path: string, auth = secret): WebSocket {
-  const ws = new WebSocket(base + path, { headers: { Authorization: `Bearer ${auth}` } });
+  const ws = new WebSocket(base + path + (path.includes("?") ? "&v=2" : "?v=2"), { headers: { Authorization: `Bearer ${auth}` } });
   ws.binaryType = "arraybuffer";
   cleanup.push(() => ws.close());
   return ws;
@@ -56,16 +56,16 @@ describe("reverse relay prototype", () => {
     const http = base.replace("ws:", "http:");
     const headers = { Authorization: `Bearer ${secret}` };
     // A valid HTTP request without an upgrade must not consume a slot.
-    expect((await fetch(http + "/node?id=bad", { headers })).status).toBe(400);
+    expect((await fetch(http + "/node?id=bad&v=2", { headers })).status).toBe(400);
     const a = connect(base, "/node?id=a");
     const b = connect(base, "/node?id=b");
-    expect(await Promise.all([nextText(a), nextText(b)])).toEqual(["registered", "registered"]);
-    expect((await fetch(http + "/node?id=c", { headers })).status).toBe(503);
+    expect(await Promise.all([nextText(a), nextText(b)])).toEqual(["registered-v2", "registered-v2"]);
+    expect((await fetch(http + "/node?id=c&v=2", { headers })).status).toBe(503);
     const denied = connect(base, "/node?id=denied");
     await closed(denied);
     a.close(); await closed(a);
     const c = connect(base, "/node?id=c");
-    expect(await nextText(c)).toBe("registered");
+    expect(await nextText(c)).toBe("registered-v2");
   });
 
   test("session limit counts pending and active sessions and releases them", async () => {
@@ -76,15 +76,15 @@ describe("reverse relay prototype", () => {
     await nextText(control);
     const a = connect(base, "/client?node=n");
     const request = JSON.parse(await nextText(control));
-    expect((await fetch(http + "/client?node=n", { headers })).status).toBe(503);
+    expect((await fetch(http + "/client?node=n&v=2", { headers })).status).toBe(503);
     const denied = connect(base, "/client?node=n");
     await closed(denied);
     const channel = connect(base, "/channel?id=" + request.id);
     const ready = nextText(a);
     await new Promise<void>((resolve, reject) => { channel.onopen = () => resolve(); channel.onerror = () => reject(new Error("channel failed")); });
-    channel.send("ready");
-    expect(await ready).toBe("ready");
-    expect((await fetch(http + "/client?node=n", { headers })).status).toBe(503);
+    channel.send("ready-v2");
+    expect(await ready).toBe("ready-v2");
+    expect((await fetch(http + "/client?node=n&v=2", { headers })).status).toBe(503);
     a.close(); await closed(a); await closed(channel);
     const b = connect(base, "/client?node=n");
     expect(JSON.parse(await nextText(control)).type).toBe("connect");
@@ -101,12 +101,12 @@ describe("reverse relay prototype", () => {
     const a = connect(base, "/node?id=a");
     const b = connect(base, "/node?id=b");
     await Promise.all([nextText(a), nextText(b)]);
-    expect((await fetch(http + "/node?id=c", { headers })).status).toBe(503);
+    expect((await fetch(http + "/node?id=c&v=2", { headers })).status).toBe(503);
     const denied = connect(base, "/node?id=denied");
     await closed(denied);
     b.close(); await closed(b);
     const c = connect(base, "/node?id=c");
-    expect(await nextText(c)).toBe("registered");
+    expect(await nextText(c)).toBe("registered-v2");
   });
 
   test("global HTTP request window counts unauthorized requests and recovers", async () => {
@@ -119,7 +119,7 @@ describe("reverse relay prototype", () => {
     expect(limited.headers.get("retry-after")).toBe("1");
     await Bun.sleep(1050);
     const ws = connect(base, "/node?id=after");
-    expect(await nextText(ws)).toBe("registered");
+    expect(await nextText(ws)).toBe("registered-v2");
   });
 
   test("rejects invalid limit configuration", () => {
@@ -166,9 +166,10 @@ describe("reverse relay prototype", () => {
     cleanup.push(() => node.close());
     await node.ready;
     const ws = connect(base, "/client?node=slow");
-    expect(await nextText(ws)).toBe("ready");
+    expect(await nextText(ws)).toBe("ready-v2");
+    ws.addEventListener("message", event => { if (event.data === "fin") ws.send("fin-ack"); });
     ws.send(expected);
-    ws.close(1000);
+    ws.send("fin");
     await Promise.race([ended, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("TCP drain timed out")), 4000))]);
     expect(total).toBe(expected.length);
     const actual = new Uint8Array(total);
@@ -226,7 +227,7 @@ describe("reverse relay prototype", () => {
     await node.ready;
     const a = connect(base, "/client?node=machine-1");
     const b = connect(base, "/client?node=machine-1");
-    expect(await Promise.all([nextText(a), nextText(b)])).toEqual(["ready", "ready"]);
+    expect(await Promise.all([nextText(a), nextText(b)])).toEqual(["ready-v2", "ready-v2"]);
     expect(accepted).toBe(2);
     const one = new Uint8Array([0, 255, 128, 13, 10, 1, 0, 42]);
     const two = Uint8Array.from({ length: 65536 }, (_, i) => (i * 131) % 256);
@@ -259,15 +260,15 @@ describe("reverse relay prototype", () => {
         if (result.length === 2) { clearTimeout(timer); resolve(result); }
       });
     });
-    expect(messages[0]).toBe("ready");
+    expect(messages[0]).toBe("ready-v2");
     expect(new Uint8Array(messages[1] as ArrayBuffer)).toEqual(banner);
   });
 
   test("requires shared secret, rejects missing node, and prevents duplicate registration", async () => {
     const { base } = startRelay();
     const http = base.replace("ws:", "http:");
-    expect((await fetch(http + "/node?id=n")).status).toBe(401);
-    expect((await fetch(http + "/client?node=n", { headers: { Authorization: `Bearer ${secret}` } })).status).toBe(404);
+    expect((await fetch(http + "/node?id=n&v=2")).status).toBe(401);
+    expect((await fetch(http + "/client?node=n&v=2", { headers: { Authorization: `Bearer ${secret}` } })).status).toBe(404);
     const node = startNodeClient({ relayUrl: base, nodeId: "n", secret });
     cleanup.push(() => node.close());
     await node.ready;
@@ -323,12 +324,32 @@ describe("reverse relay prototype", () => {
   test("cleans up an unanswered session after the setup timeout", async () => {
     const { base } = startRelay(50);
     const control = connect(base, "/node?id=idle");
-    expect(await nextText(control)).toBe("registered");
+    expect(await nextText(control)).toBe("registered-v2");
     const ws = connect(base, "/client?node=idle");
     const request = JSON.parse(await nextText(control));
     expect(request.type).toBe("connect");
     await closed(ws);
     const http = base.replace("ws:", "http:");
-    expect((await fetch(http + "/channel?id=" + request.id, { headers: { Authorization: `Bearer ${secret}` } })).status).toBe(404);
+    expect((await fetch(http + "/channel?id=" + request.id + "&v=2", { headers: { Authorization: `Bearer ${secret}` } })).status).toBe(404);
   });
+});
+
+
+test("v2 rejects legacy upgrades and binary data sent after FIN", async()=>{
+ const {base}=startRelay();const http=base.replace("ws:","http:");const headers={Authorization:`Bearer ${secret}`};
+ for(const path of ["/node?id=legacy","/node?id=legacy&v=1","/node?id=legacy&v=2&v=2"])
+   expect((await fetch(http+path,{headers})).status).toBe(400);
+ const control=connect(base,"/node?id=fin-check");expect(await nextText(control)).toBe("registered-v2");
+ const client=connect(base,"/client?node=fin-check");const request=JSON.parse(await nextText(control));expect(request.version).toBe(2);
+ const channel=connect(base,"/channel?id="+request.id);const ready=nextText(client);
+ await new Promise<void>((resolve,reject)=>{channel.onopen=()=>resolve();channel.onerror=()=>reject(new Error("Channel failed"));});
+ channel.send("ready-v2");expect(await ready).toBe("ready-v2");
+ const event=new Promise<CloseEvent>(resolve=>client.addEventListener("close",resolve,{once:true}));
+ client.send("fin");client.send(new Uint8Array([1]));expect((await event).code).toBe(1011);
+ const next=connect(base,"/client?node=fin-check");const nextRequest=JSON.parse(await nextText(control));
+ const nextChannel=connect(base,"/channel?id="+nextRequest.id);const nextReady=nextText(next);
+ await new Promise<void>((resolve,reject)=>{nextChannel.onopen=()=>resolve();nextChannel.onerror=()=>reject(new Error("Channel failed"));});
+ nextChannel.send("ready-v2");expect(await nextReady).toBe("ready-v2");
+ const peerClose=new Promise<CloseEvent>(resolve=>nextChannel.addEventListener("close",resolve,{once:true}));
+ next.close(1000);expect((await peerClose).code).toBe(1011);
 });

@@ -252,7 +252,7 @@ SSH255、超时或断线可留下远端 effects unknown；只终止本地 SSH �
 
 node 只连接本机配置 SSH，不给 relay 任意内网地址。公网用经批准 WSS/加密承载；启动进程不等于 node 注册或实际 SSH 成功。ProxyCommand 必须指向本平台编译二进制的绝对路径，注意 OpenSSH percent 展开和 shell 引用，secret 不进入 argv。
 
-新连接的候选 direct/jump/forwarded endpoint 必须实际存在，保持同一受信 host-key alias、严格验证和总时间预算。当前 `ssh-routes` 已有真实探测/候选回退，不是完整 UU/rathole 等多后端自动部署。节点重连只恢复新连接机会，既有 SSH 流不会迁移。relay 不支持透明 TCP half-close，不能把 close 当成远端应用收到或处理完成。
+新连接的候选 direct/jump/forwarded endpoint 必须实际存在，保持同一受信 host-key alias、严格验证和总时间预算。当前 `ssh-routes` 已有真实探测/候选回退，不是完整 UU/rathole 等多后端自动部署。节点重连只恢复新连接机会，既有 SSH 流不会迁移。当前新源码 relay v2 已实现方向 FIN/ACK 的 TCP half-close，旧部署未自动升级；整组 relay/node/proxy 同版本，不允许混用/自动降级。ACK/close 不能当成远端应用收到或处理完成。
 
 ### 9.2 tmux
 

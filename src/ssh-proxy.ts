@@ -1,12 +1,12 @@
+import { READY, FIN, FIN_ACK, relayControl, relayEndpoint } from "./relay-protocol.ts";
 /**
  * Local SSH ProxyCommand byte bridge for the relay in relay.ts (Bun runtime).
  * Pass secrets through configuration, never through a constructed shell command.
  * Use wss:// on untrusted networks. This does not perform SSH host-key checking.
  *
- * WebSocket has no TCP half-close. On input EOF we drain locally queued frames,
- * close the WebSocket normally, and reject: bytes accepted before close are
- * ordered ahead of it, but delivery or a response after EOF cannot be guaranteed.
- * In particular, this is not suitable for protocols that require a half-close.
+ * Protocol v2 carries directional FIN/ACK without closing the WebSocket early.
+ * Input EOF drains accepted bytes and preserves the response direction.
+ * FIN ACK confirms bridge drain/EOF only, never application processing.
  * Output is never ended by this function; callers own the injected streams.
  * Bun WebSocket assembles a complete inbound message before delivery, so its
  * internal allocations cannot be bounded here; a relay must be trusted to obey
@@ -28,6 +28,8 @@ export interface SshProxyOptions {
   input?: Readable;
   output?: Writable;
   setupTimeoutMs?: number;
+  /** Called once after remote FIN and accepted output drains. Caller owns output EOF. */
+  onRemoteEnd?: () => void;
 }
 
 /** Rejects with a safe diagnostic. It never writes diagnostics to stdout. */
@@ -45,8 +47,7 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
       url = new URL(options.relayUrl);
       if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search || url.hash)
         throw new Error();
-      url.pathname = "/client";
-      url.searchParams.set("node", options.nodeId);
+      url = new URL(relayEndpoint(url.toString(), "/client", "node", options.nodeId));
     } catch { reject(new Error("Invalid relay URL")); return; }
     const input = options.input ?? process.stdin;
     const output = options.output ?? process.stdout;
@@ -60,7 +61,7 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
     let ready = false, finished = false, eof = false, closing = false;
     let queue: Uint8Array[] = [];
     let queued = 0, pendingOutput = 0;
-    let remoteClosed = false;
+    let remoteClosed = false, sentFin = false, remoteFin = false, sentAck = false, receivedAck = false;
     let drainTimer: ReturnType<typeof setTimeout> | undefined;
     let poll: ReturnType<typeof setInterval> | undefined;
     let setupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -91,7 +92,7 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
     const fail = (message: string) => finish(new Error(message));
     const ensurePoll = () => { if (!poll) poll = setInterval(pump, 10); };
     function pump() {
-      if (finished || !ready || closing) return;
+      if (finished || !ready || closing || sentFin) return;
       if (ws.readyState !== WebSocket.OPEN) { fail("Relay connection closed unexpectedly"); return; }
       try {
         while (queue.length && ws.bufferedAmount < HIGH) {
@@ -106,11 +107,11 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
       if (queue.length || ws.bufferedAmount > LOW) { input.pause(); ensurePoll(); return; }
       if (poll) { clearInterval(poll); poll = undefined; }
       if (eof) {
-        // bufferedAmount == 0 is necessary before starting close; the close frame
-        // follows preceding data but is not a remote-application acknowledgement.
+        // FIN follows preceding bytes in the same ordered WebSocket direction.
+        // Drain does not acknowledge remote application processing.
         if (ws.bufferedAmount !== 0) { ensurePoll(); return; }
-        closing = true;
-        try { ws.close(1000, ""); } catch { fail("Relay close failed"); }
+        sentFin = true;
+        try { ws.send(FIN); } catch { fail("Relay FIN failed"); }
       } else input.resume();
     }
     function onData(chunk: unknown) {
@@ -123,8 +124,15 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
     function onEnd() {
       if (finished || eof) return;
       eof = true;
-      drainTimer = setTimeout(() => fail("Relay drain timed out"), DRAIN_TIMEOUT);
+      if (!drainTimer) drainTimer = setTimeout(() => fail("Relay drain timed out"), DRAIN_TIMEOUT);
       pump();
+    }
+    function acknowledgeRemoteFin() {
+      if (!remoteFin || sentAck || pendingOutput !== 0 || finished) return;
+      try {
+        options.onRemoteEnd?.();
+        sentAck = true; ws.send(FIN_ACK);
+      } catch { fail("Output EOF failed"); }
     }
     function onInputError() { fail("Input stream failed"); }
     function onOutputError() { fail("Output stream failed"); }
@@ -136,13 +144,23 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
     ws.onmessage = (event) => {
       if (finished) return;
       if (!ready) {
-        if (event.data !== "ready") { fail("Invalid relay ready message"); return; }
+        if (event.data !== READY) { fail("Invalid relay ready message"); return; }
         ready = true;
         if (setupTimer) clearTimeout(setupTimer);
         if (input.readableEnded) onEnd();
         pump(); return;
       }
-      if (!(event.data instanceof ArrayBuffer)) { fail("Unexpected relay message"); return; }
+      if (typeof event.data === "string") {
+        const frame = relayControl(event.data);
+        if (frame === FIN && !remoteFin) {
+          remoteFin = true;
+          if (!drainTimer) drainTimer = setTimeout(() => fail("FIN completion timed out"), DRAIN_TIMEOUT);
+          acknowledgeRemoteFin();
+        } else if (frame === FIN_ACK && sentFin && !receivedAck) receivedAck = true;
+        else fail("Unexpected relay control message");
+        return;
+      }
+      if (!(event.data instanceof ArrayBuffer) || remoteFin) { fail("Unexpected relay message"); return; }
       const bytes = new Uint8Array(event.data);
       if (bytes.byteLength > 1024 * 1024) { fail("Relay frame limit exceeded"); return; }
       if (pendingOutput + bytes.byteLength > MAX_PENDING) { fail("Output buffer limit exceeded"); return; }
@@ -152,6 +170,7 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
           pendingOutput -= bytes.byteLength;
           if (finished && pendingOutput === 0) setImmediate(() => output.removeListener("error", onOutputError));
           if (err) { fail("Output stream failed"); return; }
+          acknowledgeRemoteFin();
           if (remoteClosed && pendingOutput === 0) finish(closeError);
         });
       } catch { fail("Output stream failed"); }
@@ -161,7 +180,7 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
       if (finished) return;
       remoteClosed = true; closing = true; input.pause();
       if (!ready || (event.code !== 1000 && event.code !== 1005)) closeError = new Error("Relay connection closed unexpectedly");
-      else if (eof) closeError = new Error("Input EOF: TCP half-close is not supported; response after EOF cannot be guaranteed");
+      else if (!(sentFin && remoteFin && sentAck && receivedAck)) closeError = new Error("Relay closed before directional completion");
       if (pendingOutput === 0) finish(closeError);
       else if (!drainTimer) drainTimer = setTimeout(() => fail("Output drain timed out"), DRAIN_TIMEOUT);
     };

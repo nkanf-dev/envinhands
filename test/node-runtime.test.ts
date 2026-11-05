@@ -167,9 +167,9 @@ test("a node registers again when a local relay restarts", async () => {
     reconnect: { initialDelayMs: 20, maxDelayMs: 80, jitter: 0 },
   });
   const openSession = () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/client?node=restart-test`, { headers: { Authorization: `Bearer ${secret}` } });
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/client?node=restart-test&v=2`, { headers: { Authorization: `Bearer ${secret}` } });
     const ready = new Promise<void>((resolve, reject) => {
-      ws.addEventListener("message", (event) => event.data === "ready" ? resolve() : reject(new Error("Unexpected session message")), { once: true });
+      ws.addEventListener("message", (event) => event.data === "ready-v2" ? resolve() : reject(new Error("Unexpected session message")), { once: true });
       ws.addEventListener("close", () => reject(new Error("Session closed before ready")), { once: true });
     });
     return { ws, ready };
@@ -185,7 +185,7 @@ test("a node registers again when a local relay restarts", async () => {
     const deadline = Date.now() + 3000;
     let status = 0;
     while (Date.now() < deadline) {
-      const response = await fetch(`http://127.0.0.1:${port}/client?node=restart-test`, { headers: { Authorization: `Bearer ${secret}` } });
+      const response = await fetch(`http://127.0.0.1:${port}/client?node=restart-test&v=2`, { headers: { Authorization: `Bearer ${secret}` } });
       status = response.status;
       if (status === 400) break; // registered node, but this HTTP request is not a WebSocket upgrade
       await Bun.sleep(20);

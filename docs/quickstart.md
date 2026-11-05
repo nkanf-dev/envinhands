@@ -49,6 +49,8 @@ bun run src/cli.ts relay
 
 ## 节点与 SSH
 
+当前新源码使用显式 relay wire v2（内部 endpoint `v=2`、registered-v2/ready-v2）。relay/node/proxy 必须整组同版本部署；旧组件会被拒绝，不自动降级。普通 base URL 配置不需手工拼 query。v2 支持方向 FIN/ACK，客户端输入 EOF 后仍可收到返回数据；ACK 仅表示桥接排空/EOF，不表示应用已处理。新版本实际部署与旧服务分开，详见 [relay-protocol.md](relay-protocol.md)。
+
 在已启用 SSH Server 的目标机器上：
 
 ```bash

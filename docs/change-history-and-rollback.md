@@ -83,3 +83,11 @@ Prime原锁依赖审计是另仓库owner任务。原锁29报告不等于29已证
 - Prime `fad44047ed8aac675c2a4a4f7a809a5c94c8a8d6`：正常hooks提交push，root独立ls-remote完整SHA一致；Undici7.30.1/MCPsdk1.32.0，只2第三方锁条目和2workspace声明，无其他transitive漂移。正常check、OAuth40、Win网络/loader34、Linux工具/installer101pass1skip及actualHTTP/help通过。剩余安全告警与条件路径另有审计，不宣称全清。
 
 Prime此次依赖回退可revert该提交并用原锁重建独立目录，但会恢复对应已知告警；旧原锁VM验证副本未被改动。不能在live服务任意覆盖node_modules或将安全回退解释为需要删除Env日志/数据。两个仓库无CI改动、无force/amend共享历史。
+
+## Relay v2 方向 EOF 与单 ZIP 边界
+
+新增 relay-protocol.ts，relay/node/proxy 显式 `v=2`/registered-v2/ready-v2，二进制仍为opaque SSH。FIN/FIN_ACK只确认bridge排空/EOF；一向EOF不先关WebSocket，双FIN/ACK齐才正常关闭，提前endpoint1000也失败。保留限额/timeout，新增optional onRemoteEnd默认不end stdout。旧组件会拒绝，必须整组新部署，不自动fallback或声称旧SSH迁移。生产node-runtime不改，仅其直接测试peer的三个协议字面量更新。首红/首impl失败均保留。
+
+Windows全212pass/type0；精确175文件Linux211pass/1skip/type0+hash不变。实际Windows编译proxy通过既有strictSSH加密承载→新VMv2relay/node→真实sshd返回1000/Linux/exit0；原实例未替换。回退必须relay/node/proxy一组回退，不将v2客户端指向旧线协议；保留所有任务/审计数据，不重放未知远端操作。
+
+Prime独立ZIP提交e263f1b已push，tools-manager单ZIP调用替换，tar不变；extractzip移除、显式原锁yauzl/types，成员全预检/新空staging/exclusive写/小工具有界预算。实际六官方布局提取+hash、Win/Linux helper/consumer16pass、正常hooks通过。剩余风险报告继续有效，两项精确overrides仍独立提交，不能倒写成此ZIP阶段全安全通过。

@@ -13,7 +13,7 @@
 | 三人六设备与 Intel/AMD 兼容 | 受阻 | Windows x64 与 Debian VM amd64 已运行；Linux 原生采集已核对。E3、E4 | Linux desktop、Intel NAS 实机、三台 Mac、各自网络尚未逐台验收；兼容代码不等于硬件实测。 |
 | 设备元数据登记到管理主机 | 已实测可用 | Windows/Linux 原生信息实际登记，API 与独立 SQLite 读回 pending；device register 共用采集路径，macOS 有映射 fixture。E4、E5 | 这里只是元数据，不称最终“注册成功”。macOS 真机仍缺。 |
 | 所有者确认后的公钥/admin 自动配置与撤销 | 未完成 | 旧 Linux 助手仍为计划；新增 runUnixRegistration/provision 已实现 explicit confirm、现有管理员上下文、owned receipt 的 key/sudoers 应用与撤销。Linux 真 Python/visudo 隔离效果测试通过，真实系统未应用。src/registration/apply.ts | Unix 实际文件效果/部分撤销已测；真实设备仍需所有者授权并以自身身份验 SSH/admin，不能以隔离 fixture 说已配权。Windows 原生 helper 也已实现 owner-confirmed apply/owned revoke，真实 NTFS 文件/ACL 的隔离 fixture 通过；组操作只 fixture mock，真实管理员上下文/自定义 sshd 及 Mac 实机仍未验证。 |
-| 每个目标 Agent 自身 SSH 与管理员验证 | 部分完成 | 实际身份/session/route/TTL 客户端检查、严格 host key、真实普通用户 SSH；sudo 不足正确 not-ready。E6 | 不能用服务端身份替代其他 Agent。指定身份逐一授权、正向 admin 验证未完成；当前 VM sudo -n 失败。sshIdentityRef 已改实际 OpenSSH 公钥 SHA256，前后指纹变化不 ready；服务持久 /v1/access-evidence 按注册/session/target/route/key/user 保存声明观察，latest 负向盖旧正向，不升全局 machine ready。正向管理员实测仍缺。 |
+| 每个目标 Agent 自身 SSH 与管理员验证 | 部分完成 | 实际身份/session/route/TTL 客户端检查、严格 host key、真实普通用户 SSH；sudo 不足正确 not-ready。E6 | 不能用服务端身份替代其他 Agent。指定身份逐一授权、正向 admin 验证未完成；当前 VM sudo -n 失败。sshIdentityRef 已改实际 OpenSSH 公钥 SHA256，前后指纹变化不 ready；服务持久 /v1/access-evidence 按注册/session/target/route/key/user 保存声明观察，latest 负向盖旧正向，不升全局 machine ready。实际 Windows 主控使用既有获准key/严格hostkey登录、真实sudo-n失败并按该公钥指纹/session存入当前VM API，not-ready已实际读回；正向管理员授权仍缺。 |
 | Windows 实际 SSH 管理员令牌 | 受阻 | 固定命令检查有效令牌的代码和 mock 通过，非仅检查组成员。test/windows-readiness.test.ts | 需获准 Windows SSH 会话与真实管理员身份；尚未实测。 |
 | NAT 主动出站目标与受控 relay SSH 通路 | 部分完成 | Windows 编译 proxy→加密承载→VM relay/node→同 VM 真实 sshd，错误 secret/host key 拒绝；受控字节通路实测成功。E7 | 还不是独立 NAT 站点仅出站接入共同外部入口；异地、多故障域、入口断开与恢复未闭合。 |
 | 多入口真实探测及新连接失败回退 | 部分完成 | 严格 SSH 实探测与候选失败后成功路径已跑通；开始的命令不换路重跑。E6、src/transports/ssh-routes.ts | 两个真实异地/独立故障域后端、入口中断恢复和站点换网还未完成；UU/rathole 只有进程适配。 |
@@ -26,7 +26,7 @@
 | 一致性备份与恢复演练 | 已实测可用 | a3c0e42 隔离 fixture 经 VACUUM INTO 备份、新路径恢复，两次独立服务重启，API/SQL 全字段相等、三库 integrity ok。E13 | 另完整新fixture已包含私有config/sourceRef/DB/工作文件/spool+operations恢复、新OS服务、flushpending0及拒operation重放callback0（E24）。不涉及生产 live 库、并发 writer 压力、掉电或定时备份。 |
 | 轻量节点、解耦复用与便携运行 | 部分完成 | Env 核心独立于 Prime，CLI/外部适配共享核心，无新增 Env 第三方依赖；Bun 单文件与用户态运行时已用。E3、E7 | 全目标架构发布、安装包与内存/CPU 预算、长期服务/开机恢复尚未全面交付。 |
 | Agent skills 与当前平台集成 | 已实测可用 | 全新空 agentDir、Env 工作目录经 Prime 正常 SettingsManager/DefaultResourceLoader 自动发现两个原始项目 skill，正文完整可读，diagnostics 为空，原文件 hash 未变。E14 | 这是发现/可读取，不声称模型已读取遵守正文或正文所有历史命令已复验。 |
-| relay 完整流控与关闭语义 | 部分完成 | 实际 SSH 正常通路和现有限额可用。E7 | 现 relay 不支持透明 half-close；完整慢端/溢出/关闭错误与生产容量尚未达到设计目标。 |
+| relay 完整流控与关闭语义 | 部分完成 | 实际 SSH 正常通路和现有限额可用。E7 | 新 relay v2 原生方向 EOF/1MiB 请求与响应/反向 FIN/输出排空及提前关闭拒绝已通过（Win focused24+root combined212/type0，Linux focused24）；完整175快照Linux211pass1skip/type0、Windows212pass/type0；Windows compiled proxy→加密承载→VM新v2 relay/node→真实sshd id/uname exit0已通过，不称旧服务已升级。生产容量/异地长期稳定另测。 |
 | 服务/数据/配置回退与使用手册 | 部分完成 | 完整运维、阶段变更与回退说明已交付，区分代码、DB、凭据与 spool。E11 | 原 live5b8deaf 未动；新增正式服务158文件冻结在 VM 新配置/新DB两真实OS进程重启通过，config/记录不变，新 inventory 正常。现新独立服务承载双向共享工作；不是旧 live 自动升级、开机服务或整体系灾备。 |
 | 两仓库 Conventional Commits 与及时 push | 已实测可用 | Prime 61a643b 已推送且干净；Env 5b8deaf/1fe9e56/7aee3e8/a3c0e42 与文档89791d9 已推送，git ls-remote 完整 SHA 核对89791d9。E12 | 网络首失败独立保留；后续文档提交仍按实际回执核对。 |
 
@@ -69,6 +69,9 @@
 
 - **E26**：vm-20b73e7-20261105T211339Z/VM-20B73E7-COMPILED-VALIDATION.md：精确20b73e7/173源码哈希不变，Linux207pass1skip0fail/type0；编译ELF实际helper文件效果通过，不是只build成功。Windows对应208pass/type0/compiledfixture同证据分开保留。
 - **E27**：Prime fad44047ed8aac675c2a4a4f7a809a5c94c8a8d6 已正常hooks提交push并由root独立远端SHA核对，Undici7.30.1/MCPsdk1.32.0两同major升级，原报告中两包告警消失。OAuth40/Win网络loader34/Linuxtoolsinstaller101pass1skip/actualUndiciHTTP和两平台CLIhelp通过。原锁与新锁fixture分开；剩余Windows26/Linux27告警继续明确，不称生产全安全或将公告数量等同利用。
+
+- **E28**：relay-v2-20261105T212022Z/RELAY-V2-DELIVERY.md 与 vm-relay-v2-20261105T213407Z/VM-V2-175-RELAY-HANDOFF.md：显式v=2整组，Win/Linux focused24（含方向EOF后1MiB回包/反向FIN/提前close），root全Windows212pass/type0、精确Linux211pass1skip/type0；首红与旧node-runtime fixture更新保留。relay-v2-compiled-windows-real-sshd-first exit0，实际1000/Linux，严格hostkey/原身份，无旧实例升级/WSS/异地声明。
+- **E29**：Prime e263f1bd9e6f7fbac35359bda2c01425620c176b 已push且root独立完整SHA核对；只工具ZIP边界替换，先全成员预检后新staging写，六官方fd/rg ZIP实际提取与独立hash相符、未执行下载程序，Win/Linux helper+consumer16pass、正常check/loader/help通过。tar不变、无模型；仍有独立告警，不能宣称所有压缩包/异步reader.close错误已覆盖。
 
 ## 推送后复核结论
 

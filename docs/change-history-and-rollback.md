@@ -16,10 +16,15 @@
 | Prime `61a643b` | 修真实源码loader缺dist解析；Windowsjunction与本地Vitest启动；resources策略测试确定性化并迁出optional真实API用例；文档更新 | 正常hooks/fullcheck/policy/真实loader13项及seed通过；原manifest/lock不变；三旧适配仅格式化且编译等价。回退会恢复fresh-source加载故障，不需要Env业务退回Prime。 |
 | Env `1fe9e56` | portable collaborate CLI/client；真实Prime CLI/daemon/session模型工具循环验收；配置化execution外部适配；返回实际命令output；validation-onlyPrime源码导出器 | 171pass/typecheck；3真实CLI→VM脚本provider正常使用实测。实际模型另有后续报告，不把该提交写成当时已真模型验收。核心不依赖Prime；回退新CLI入口需要同步退相关使用文档/调用端。 |
 | Env `7aee3e8` | spool按registration+operationId先durable预留，防已开始任务重试/重启后重跑 | 171pass/typecheck；journal在spool/operations，回退时保留，不删除以“恢复重试”。网络push首失败reset有原件；之后正常push成功。 |
+| Env `a3c0e42` | 有序 flush/真实 pending、准备期取消、Prime 工具事件观察与只读文件、统一设备登记/失败 inventory、正式 SSH access API/CLI，以及真实模型协作/CTF、运维手册 | Windows 181 pass；精确 123 文件 Linux 副本 180 pass/1 skip/0 fail，两端 typecheck 0。源码与锁未变。新增 includeNotReady 查询需对应服务；旧服务未升级时不能假定支持。撤回本提交前保存本地 spool/operations 和全部记录，协调停用新增客户端入口，保留 SQLite 数据。网络失败原件已保留；之后正常 push 成功，远端完整 SHA 与 a3c0e42 一致。 |
 
-## 本阶段工作（尚以实际后续commit补录）
+## 本阶段实际结果
 
-本阶段已实现并实际验证：正常并发flush pending、intent/outcome顺序及准备阶段取消；自动Prime工具事件观察；只读本地共享资源；真实gpt-6.1-terra三CLI协作与自建CTF全员自然协商100分；管理主机Linux/Windows设备登记与显式inventory；Linux/macOS/Windows统一登记入口；可配置SSH远程access API/CLI实际VM200。当前阶段提交号由后续commit日志确认，原始目标缺项见goal-conformance.md。
+本阶段已实现并实际验证：正常并发flush pending、intent/outcome顺序及准备阶段取消；自动Prime工具事件观察；只读本地共享资源；真实gpt-6.1-terra三CLI协作与自建CTF全员自然协商100分；管理主机Linux/Windows设备登记与显式inventory；Linux/macOS/Windows统一登记入口；可配置SSH远程access API/CLI实际VM200。功能提交为 `a3c0e426f82dca07498975811921ce1e2dca23ce`；原始目标缺项与证据见 goal-conformance.md。
+
+## 交付核验与文档校正
+
+`a3c0e42` push 已由远端完整 SHA 核对。按最初交接、design/protocol 和后续要求重新列出逐项目标状态，并修正 README/HANDOFF/quickstart 的历史描述。隔离 SQLite 一致性备份→新路径恢复→两次独立服务重启已通过，机器/心跳/消息 ack/note/注册/change 全字段核对一致；没有生产库切换，详见运维手册 10.3。另以全新 Prime agentDir 在 Env 工作目录自动发现两个原始项目 skill，正常资源加载路径及正文读取 exit 0，无模型调用、无 skill 改动。这里是文档和实际验收补录，不改变功能代码或数据库 schema。
 
 ## 依赖和配置变化
 

@@ -264,7 +264,7 @@ Env Unix `tmux NODE SESSION [USER]` 还需编译 proxy 的绝对路径/`ENVINHAN
 
 ## 10. SQLite、spool 和证据备份/恢复
 
-以下是操作方案，**不是本轮已完成的生产备份演练**。实施前取得备份目的路径与数据范围授权，避免复制其他人的数据库/会话。
+以下是操作方案，**不是生产 live 库切换演练**。已在 `a3c0e42` 的 Debian 隔离 fixture 实际完成一致性备份、新路径恢复和两次独立服务重启；细节见下文 10.3。实施前取得备份目的路径与数据范围授权，避免复制其他人的数据库/会话。
 
 ### 10.1 活跃 SQLite 的一致性备份
 
@@ -305,6 +305,32 @@ backup.chmod(0o600)  # Windows 另核 ACL，不以此替代。
 5. 核查精确服务路径/版本、实际 HTTP、加密转发、下游任务，再宣布恢复；记录丢失窗口/unknown。不在恢复时重复原远端任务。
 
 spool 是独立 durable intent/outcome/replay 边界，保留其原目录、权限、内容和 operation journal；不要只复制可见 pending JSON。离线备份/恢复先协调该客户端停止写入。客户端 session、运维原始输出和手工台账分开保留；备份保留期、加密与容量由操作员明确，不默默删除旧证据。
+
+### 10.3 已执行的隔离恢复演练
+
+`a3c0e42` / Bun 1.4.4 / SQLite 3.53.4 上的独立测试库，先经真实 HTTP 写入 pending 机器、Agent 心跳、未 ack 和已 ack 消息、资源 note、Agent 注册与 change 记录。停止本 fixture 新写入，但保持源 HTTP 服务打开，通过独立 Bun SQLite 连接执行：
+
+```ts
+// source 与 newBackupPath 必须为获准测试库和全新受限目的路径。
+const db = new Database(source);
+try {
+  db.query("VACUUM INTO ?").run(newBackupPath);
+} finally {
+  db.close();
+}
+```
+
+这是实际验证过的方法；当前锁定 Bun 类型未提供 `Database.backup()`，不能编造该 API。上节 Python backup 是另一种操作方案，不把它冒称本次执行入口。VACUUM 可能重排页面，故源库与备份 hash 不同不等于数据丢失。
+
+将备份复制到全新恢复路径后，两个独立 OS 子进程先后启动真实服务，API 与独立 SQL 逐字段 deepEqual。三库 integrity_check 均为 ok；未 ack 仍待处理、已 ack 不再出现在 pending pull。备份与恢复文件 SHA256 均为 `8418116b41c18be46ada12155093582f001e94d83a8d92da2823286e0cf506e6`。演练进程已退出，源与锁文件未变，现有 live 服务、数据库、token 和配置完全未读/复制/切换。
+
+可复现脚本及完整 raw/exit 在交接证据 `vm-backup-restore-20261105T192959Z/verify-backup-restore.ts` 和 `VM-BACKUP-RESTORE-REPORT.md`。命令形态：
+
+```text
+<absolute-bun> <absolute-script> <a3c0e42-isolated-source-root> <new-own-fixture-root>
+```
+
+首 inline 引号与自有 hash helper 失败原件已分别保留，修后新 fixture 正常路径 exit 0。该结果不证明并发 writer 压力、掉电/崩溃、定时备份、schema 回退或生产切换；凭据、SSH trust 和 spool 仍须另外保管。
 
 ## 11. 故障定位与处置
 
@@ -389,3 +415,9 @@ spool 是独立 durable intent/outcome/replay 边界，保留其原目录、权�
 控制消息断开：保留未确认队列/同 ID 请求与本地署名 pending，明确“本地已存、未同步”；恢复后查询/显式 flush，不宣称离线实时送达。节点 relay 断开：有界退避重连，新 SSH 流重建，旧流不迁移。远端任务断开：结果 unknown，查询已知任务/文件/PID；Unix tmux 若仍活着再附着，不创建同名新进程冒充恢复。中心不可达时可用的已授权直连是否能继续取决于实际路径，缓存权限显示陈旧，不承诺无中心始终可用。
 
 异地接入一览表至少含：成员实际地点/网络（无需公开精确住址）、设备和 OS、入口及失败域、加密控制面、节点出站、SSH身份/host key、普通任务/admin结果、重连和数据恢复、署名同步、证据/未完成项。先交付已批准的可用路径，再按最终目标补齐，不引入无关隔离体系或无限防御门槛。
+
+## 15. 项目 skill 自动发现已核验范围
+
+在 EnvInHands 工作目录使用全新空 Prime agentDir，正常 `SettingsManager.create` / `DefaultResourceLoader.reload` / `getSkills` 自动发现 `envinhands-resources` 与 `envinhands-agent-messaging`，位置为 `.prime/agent/skills/<name>/SKILL.md`。没有指定 skillPaths、复制 skill 或借用用户旧配置；两份完整正文可读取，诊断为空，文件前后 SHA256 未变。实际入口为 Prime 0.9.8+fork.4 源码、Node 24 与 tsx，exit 0，无网络或模型调用。
+
+这说明在该工作目录可正常发现项目操作说明，不等于模型已遵循说明，也不是自动运行服务或授予权限。正文中的历史示例仍须按当前 CLI、实际配置与本手册核对。报告与可复现入口见交接证据 `prime-agent-resume-20261105T173812935010Z/skill-discovery-verification/`；不需要为此修改 Prime 或 skill 源文件。

@@ -2,24 +2,33 @@
 
 本说明用于可信网络中的原型测试，**不是生产部署指南**。公开网络必须通过已验证的 HTTPS/WSS 终止代理，并配置可靠的身份认证；当前共享密钥的任何持有者均可操作全部节点或冒充 Agent。
 
+## 当前使用入口
+
+完整部署、客户端配置和故障恢复见 [运维手册](operations-manual.md)。原始目标与真实覆盖见 [目标对照](goal-conformance.md)。本说明仍保留原型子命令；不要将旧示例当作已部署的公网服务。
+
+- `bun src/cli.ts access <绝对SSH-profile.json路径>`：通过已授权、严格验证的 SSH 路径建立只绑定 loopback 的控制面访问；输出本地 URL，token 单独注入。见 [remote-access.md](remote-access.md)。
+- `bun src/cli.ts device register`：stdin JSON 提供稳定 `id`、可达 `host` 等，采集本机平台信息并登记 pending；默认不 verify、不装 key、不配管理员。见 [platform-onboarding.md](platform-onboarding.md)。
+- `bun src/cli.ts device inventory`：显式查询 ready、pending 和 not-ready；需对应新版服务，不能以新客户端已安装推断旧运行服务已升级。
+- 实际跨机证据限 Windows↔Debian VM。真实模型三 CLI 与 CTF 全员 100 分已经完成；实际 Mac 与异地入口仍待验。
+
 ## 运行时
 
 需要 Bun。安装依赖并检查：
 
 ```bash
-bun install --frozen-lockfile
+bun install --frozen-lockfile --ignore-scripts
 bun run typecheck
 bun test
 bun run src/cli.ts --help
 ```
 
-也可在对应平台构建单文件（目前仅本机 Linux 构建验证）：
+也可在对应平台构建单文件（本轮 Windows/Linux 已有本机产物验证）：
 
 ```bash
 bun build --compile src/cli.ts --outfile envinhands
 ```
 
-二进制包含 Bun 运行时。本机 Linux 产物约 109 MB；其他系统的构建与体积尚未验证。
+二进制包含 Bun 运行时。早期 Linux 产物约 109 MB；不能以该体积推断其他版本或架构。macOS 构建尚未实机验证。
 
 ## 服务端
 
@@ -59,7 +68,7 @@ export ENVINHANDS_RELAY_SECRET="<团队中继密钥>"
 ssh -o 'ProxyCommand=/绝对路径/envinhands proxy my-node' 用户名@my-node
 ```
 
-SSH 公钥认证和主机密钥信任需要预先配置；不要关闭主机密钥检查。此通路已在单机临时 sshd 上验证，不等同于跨网络实测。
+SSH 公钥认证和主机密钥信任需要预先配置；不要关闭主机密钥检查。此通路已有 Windows 编译 proxy→加密承载→VM relay/node→真实 sshd 的实测；它不等于不同地点的公网网络测试。
 
 在 Linux/macOS 的交互终端，目标端安装了 `tmux` 后，可通过相同 relay 配置启动或重新附着：
 

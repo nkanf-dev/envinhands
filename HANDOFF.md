@@ -2,6 +2,14 @@
 
 > 当前为实验原型，不能直接用于生产或公开暴露公网。
 
+## 最新可接手版本
+
+功能提交 `a3c0e426f82dca07498975811921ce1e2dca23ce` 已完成独立 Windows/VM 验证：Windows 181 pass；Debian 隔离副本 180 pass、1 skip、0 fail，两端 typecheck 均为 0。VM 的唯一 skip 是无外部 Prime checkout 的可选直接导入，不是 181 全通过。123 文件源码包及锁文件前后 hash 一致。
+
+三个真正独立 Prime CLI/daemon/session 使用 gpt-6.1-terra 完成 Windows→VM 协作和自然分工的自建 CTF，全员参与，评分 100。`device register` / `device inventory`、`access` 正式 API/CLI、工具事件署名观察和只读文件适配已接线；真实普通用户 SSH 不代表管理员 ready，当前 sudo -n 仍失败。运行中旧 bus 未随隔离测试升级。
+
+原始目标与每项证据见 [目标对照](docs/goal-conformance.md)，部署/使用/备份见 [运维手册](docs/operations-manual.md)，阶段顺序与撤回见 [演进与回退](docs/change-history-and-rollback.md)。下面旧路径和统计是历史基线，不替代本节。当前功能提交在保留首失败后已正常 push，并由 git ls-remote 完整 SHA 核对。三台 Mac、完整六设备、真实异地网络、逐 Agent 管理员正向授权与自动配权/撤销仍未闭合。
+
 ## 仓库与基线
 
 - EnvInHands：<https://github.com/nkanf-dev/envinhands>，本地 `~/projs/envinhands`。
@@ -40,7 +48,7 @@ Windows Bun1.4.4 native stage run：169 项通过、0失败、0跳过，typechec
 - `src/transports/rathole.ts`：启动预装 rathole 的进程封装。启动不代表连接成功，不负责生成配置、密钥或校验 TLS。
 - `src/readiness.ts` / `src/windows-readiness.ts`：检查服务端 SSH 身份在 Linux/macOS 是否能无交互 `sudo`，或 Windows 会话实际管理员令牌（仅 mock，未在真实 Windows 实测）；支持可配置 relay 代理。并不注册账号或安装公钥。`src/registration/linux.ts` 与 `native/linux-register` 只生成计划，apply 始终阻止执行；Rust 实验依赖系统 libsodium。
 - `src/session/tmux.ts` / `tmux-relay.ts`：构造 tmux SSH 参数及经 relay 的 ProxyCommand；CLI `tmux NODE_ID SESSION_KEY [USER]` 已接入，需交互 TTY 并提前信任派生 host key，尚未实机验证持久会话；不保证机器重启后会话存续。
-- `src/agent-bus.ts` 和 `src/server.ts`：实验性 SQLite Agent 心跳与消息持久队列，内置 Bun HTTP 监听，默认 `0.0.0.0:8787`、共享 bearer，无 TLS。接受仅表示存储，消费可能重复；同一 token 可冒充任意 Agent。只能在可信网络或正确配置的 HTTPS 反向代理后面使用。
+- `src/agent-bus.ts` 和 `src/server.ts`：实验性 SQLite Agent 心跳与消息持久队列，内置 Bun HTTP 监听，默认 `0.0.0.0:8787`、共享 bearer，无 TLS。部署显式使用 loopback 或获准加密入口。接受仅表示存储，消费可能重复；同一 token 可冒充任意 Agent。只能在可信网络或正确配置的 HTTPS 反向代理后面使用。
 - `src/prime-bridge.ts`：Agent bus 的 TS 客户端，提供显式 heartbeat/send/pull/ack；Prime fork 通过独立的 opt-in 工具调用同一总线，但不会自动把远端消息注入本地 session。
 - `src/storage.ts` 和 `src/machine-api.ts`：机器元数据与留言 SQLite 存储和 bearer API；已接入 `src/server.ts`，但仅登记数据，不安装 SSH 或设置管理员权限。
 - `docs/design.md`、`docs/protocol.md`：以长期目标为准的详细设计和待开发契约；`docs/architecture.md`、`docs/transports.md` 与 `docs/quickstart.md` 记录架构草案、连接候选及原型用法。

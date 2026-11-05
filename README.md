@@ -3,19 +3,20 @@
 - [目标详细设计](docs/design.md)：产品愿景、架构、待实现方案和验收标准。
 - [目标协议设计](docs/protocol.md)：注册、多路径、Agent 协作与恢复的未来契约。
 - [实验性原型快速开始](docs/quickstart.md) · [开发交接](HANDOFF.md)
+- [运行与运维手册](docs/operations-manual.md) · [演进与回退](docs/change-history-and-rollback.md) · [初始目标对照](docs/goal-conformance.md)
 
 ## 项目定位
 
 EnvInHands 是一个供三人团队使用的远程机器协作工具的初始设计。团队成员身处不同地点，使用不同平台，需要共同了解机器、连接状态、Agent 活动和资源相关的留言。
 
-**当前为实验性原型，不可用于生产或直接暴露公网。** 已有部分 TypeScript 组件与测试，但它们尚未整合成完整可运行产品；本文同时包含目标、现有原型和待确认设计。
+**当前为实验性原型，不可用于生产或直接暴露公网。** 已有可运行的控制面、远程访问与 Prime 协作路径，并完成 Windows↔Debian VM 集成。六设备、自动配权和异地部署尚未全部完成；本文区分已验证路径与后续目标。
 
 ## 设计目标
 
 - 让团队成员可以发现已登记的机器，并可靠地通过 SSH 连接。
 - 提供共享视图，帮助成员了解机器和 Agent 的活动情况。
 - 允许成员围绕机器或相关资源留言，补充使用意图、状态和注意事项。
-- 为与 Prime Agent TS 0.9.8 对接预留设计空间。
+- 通过独立 opt-in 扩展对接 Prime Agent TS 0.9.8，核心业务不依赖 Prime。
 - 兼顾团队成员使用的不同客户端平台，以及远程机器可能存在的平台差异。
 
 这里的“资源”指团队协作中需要描述或讨论的机器及其相关资源。具体资源类型和展示范围尚待确认。
@@ -60,9 +61,9 @@ EnvInHands 是一个供三人团队使用的远程机器协作工具的初始设
 
 ### Prime Agent TS 0.9.8 对接
 
-- 以 Prime Agent TS 0.9.8 为目标对接版本，探索获取和展示相关 Agent 活动的可行方式。
-- 先核实该版本实际提供的接口、事件和运行环境，再确定集成边界与兼容性方案。
-- 本文不假定其存在特定 API、插件机制或活动数据格式，也不承诺对接能力已经可用。
+- 已有心跳、消息和资源扩展，以及 EnvInHands 提供的审计、执行、工具事件观察与只读文件适配。均为显式 opt-in。
+- 三个独立真实 Prime CLI/daemon/session 使用实际 gpt-6.1-terra 完成 Windows→VM 消息处理环与自主协商 CTF，全员参与并获 100 分。
+- 工具事件观察不是全局文件监控；共享署名也不是密码学身份认证。见 [本阶段实际结果](docs/milestone-2026-11-05-team.md)。
 
 ## 范围与边界
 
@@ -70,7 +71,7 @@ EnvInHands 是一个供三人团队使用的远程机器协作工具的初始设
 - 不提供机器、进程或其他计算资源的隔离，也不提供资源配额或独占保证。
 - 第一版可按操作系统等条件查找机器；不承诺预留、独占或复杂资源调度。成员依靠活动信息和留言自行协调。
 - 以上边界不意味着可以忽略 SSH 身份验证、主机验证或敏感信息保护。
-- 机器注册、连接状态、活动和留言的共享方式，以及数据的持久化方式尚未确定。
+- 机器、消息、心跳和资源留言使用共享 bearer HTTP/SQLite；已实现行为见运维手册，容量治理和完整资源模型仍需完善。
 
 ## 待确认问题
 
@@ -90,11 +91,15 @@ EnvInHands 自身提供不可变 Agent 注册和追加式修改记录，支持�
 
 ## 当前状态
 
-当前代码包含 SQLite 消息与机器目录服务、实验性 SSH 反向中继与 CLI、传输选择、UU/rathole 进程适配、管理员就绪检查和 tmux 命令构造。Prime Agent fork 的 `main` 已有 opt-in 心跳、消息和资源工具。旧 Linux 开发环境曾通过隔离的真实 OpenSSH 和 Prime 心跳/消息扩展加载器测试；这不是当前 Windows 环境或资源扩展的加载验证，跨机器与公网尚未验证。自动配置公钥与 sudo、多后端自动连通和 tmux 的实机恢复验证仍未完成；Windows 管理员检查已有 mock 测试，尚未实机验证。
+当前功能代码版本 `a3c0e42` 的 Windows Bun 测试为 **181 通过**，类型检查通过。精确 123 文件源码包在 Debian VM 隔离验收为 **180 通过、1 跳过、0 失败**，类型检查通过；唯一跳过为缺少外部 Prime checkout 的可选直接导入测试。
+
+Windows→VM 已实测严格 SSH、编译 proxy→relay/node→真实 sshd、新连接探测/候选回退、正式 `access` 加密入口以及 Unix tmux 正常 detach/reconnect 保留同一进程。统一 `device register` 登记本地观察，`device inventory` 包含显式待验证/失败记录；Windows 与 Linux 已真实登记到控制主机，但仍是 pending，不是管理员 ready。新版源码通过不表示运行中旧服务已升级。
+
+自动配置公钥与 sudo/管理员权限尚未完成；每个指定 Agent 的实际管理员授权、真实 Mac、完整六设备和异地网络入口仍未完成。Windows 管理员检查有代码和 mock，但尚未在真实 Windows SSH 管理员会话验收。UU/rathole 只有进程适配，不声称真实后端已接通。
 
 `src/server.ts` 提供的机器、资源留言和 Agent bus API 使用共享 bearer token，但没有内置 TLS；持有 token 的任何人均可冒充 Agent、访问队列和修改目录。独立的 `src/control.ts` 内存原型没有认证或 TLS，不是该 SQLite 服务。实验性中继仅使用共享 secret，存在明确的流控与关闭语义限制。**不要将原型直接暴露公网，也不要以此作为生产连接通道。** Agent 管理员就绪要求见 [架构草案](docs/architecture.md)，连接方案及其状态见 [候选清单](docs/transports.md)。
 
-本地开发需要 Bun。在仓库根目录执行 `bun install`、`bun test` 和 `bun run typecheck`。测试包含本地 socket 与 mock；通过测试不意味着跨机器、跨平台或公网已验证。
+本地开发需要 Bun。在仓库根目录执行 `bun install --frozen-lockfile --ignore-scripts`、`bun test` 和 `bun run typecheck`。测试包含本地 socket 与 mock；通过测试不意味着跨机器、跨平台或公网已验证。
 
 详细的实验性 CLI 使用与限制见 [快速开始](docs/quickstart.md)。也可单独启动实验性 Agent 消息服务：
 

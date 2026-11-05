@@ -274,9 +274,35 @@ describe("reverse relay prototype", () => {
     const duplicate = startNodeClient({ relayUrl: base, nodeId: "n", secret });
     cleanup.push(() => duplicate.close());
     await expect(duplicate.ready).rejects.toThrow();
+    await duplicate.closed;
     const wrong = startNodeClient({ relayUrl: base, nodeId: "other", secret: "wrong" });
     cleanup.push(() => wrong.close());
     await expect(wrong.ready).rejects.toThrow();
+    await wrong.closed;
+  });
+
+  test("closed follows control loss and explicit close", async () => {
+    const { relay, base } = startRelay();
+    const first = startNodeClient({ relayUrl: base, nodeId: "close-test", secret });
+    await first.ready;
+    relay.stop();
+    await first.closed;
+    first.close(); first.close();
+
+    const other = startRelay();
+    const second = startNodeClient({ relayUrl: other.base, nodeId: "close-test", secret });
+    await second.ready;
+    second.close(); second.close();
+    await second.closed;
+  });
+
+  test("closed follows close before registration", async () => {
+    const { base } = startRelay();
+    const node = startNodeClient({ relayUrl: base, nodeId: "early-close", secret });
+    const rejected = node.ready.then(() => false, () => true);
+    node.close();
+    expect(await rejected).toBe(true);
+    await node.closed;
   });
 
   test("unavailable local TCP closes client and node remains registered", async () => {

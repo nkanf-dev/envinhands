@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { Storage } from "../src/storage.ts";
 
-const registration = { id: "nas", name: " NAS ", host: "nas.local", os: "Linux" };
+const registration = { id: "nas", name: " NAS ", host: "nas.local", os: "Linux", sshUser: "admin" };
 
 test("machines, heartbeat, and messages survive close and reopen", () => {
   const dir = mkdtempSync(join(tmpdir(), "envinhands-storage-"));
@@ -16,6 +17,9 @@ test("machines, heartbeat, and messages survive close and reopen", () => {
     assert.equal(machine.name, "NAS");
     assert.equal(machine.sshPort, 22);
     assert.equal(machine.lastHeartbeatAt, null);
+    assert.equal(machine.status, "pending");
+    assert.equal(machine.sshUser, "admin");
+    assert.equal(machine.verifiedAt, null);
     assert.ok(!Number.isNaN(Date.parse(machine.registeredAt)));
     const heartbeat = store.recordHeartbeat("nas");
     assert.ok(heartbeat.lastHeartbeatAt);
@@ -72,4 +76,68 @@ test("invalid inputs, duplicate ids, missing machines and closed storage fail", 
   store.close();
   assert.throws(() => store.listMachines(), /Storage is closed/);
   assert.throws(() => store.registerMachine(registration), /Storage is closed/);
+});
+
+test("verification state is persisted and can be revoked", () => {
+  const store = Storage.open(":memory:", 60_000);
+  try {
+    store.registerMachine(registration);
+    const verified = store.recordVerification("nas", true);
+    assert.equal(verified.status, "ready");
+    assert.ok(verified.verifiedAt && !Number.isNaN(Date.parse(verified.verifiedAt)));
+    assert.deepEqual(store.getMachine("nas"), verified);
+    assert.deepEqual(store.listMachines(), [verified]);
+    const failed = store.recordVerification("nas", false);
+    assert.equal(failed.status, "not-ready");
+    assert.equal(failed.verifiedAt, null);
+    assert.ok(failed.checkedAt && !Number.isNaN(Date.parse(failed.checkedAt)));
+    assert.equal(store.getMachine("nas")?.status, "not-ready");
+    assert.throws(() => store.recordVerification("missing", true), /Machine not found/);
+  } finally { store.close(); }
+});
+
+test("verification expiry is computed for both get and list, and re-verification restores readiness", () => {
+  const dir = mkdtempSync(join(tmpdir(), "envinhands-expiry-"));
+  const path = join(dir, "state.sqlite");
+  const store = Storage.open(path, 60_000);
+  try {
+    store.registerMachine(registration);
+    store.recordVerification("nas", true);
+    const db = new Database(path);
+    try { db.query("UPDATE machines SET verifiedAt = ? WHERE id = ?").run("2000-01-01T00:00:00.000Z", "nas"); }
+    finally { db.close(); }
+    assert.equal(store.getMachine("nas")?.status, "not-ready");
+    assert.equal(store.listMachines()[0].status, "not-ready");
+    assert.equal(store.recordVerification("nas", true).status, "ready");
+    assert.equal(store.getMachine("nas")?.status, "ready");
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("legacy database migrates without granting readiness or losing data", () => {
+  const dir = mkdtempSync(join(tmpdir(), "envinhands-migration-"));
+  const path = join(dir, "state.sqlite");
+  const db = new Database(path);
+  db.exec(`CREATE TABLE machines (
+    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, host TEXT NOT NULL,
+    os TEXT NOT NULL, sshPort INTEGER NOT NULL, registeredAt TEXT NOT NULL, lastHeartbeatAt TEXT
+  );
+  CREATE TABLE resource_messages (id TEXT PRIMARY KEY NOT NULL, resourceId TEXT NOT NULL,
+    author TEXT NOT NULL, text TEXT NOT NULL, createdAt TEXT NOT NULL);
+  INSERT INTO machines VALUES ('old', 'Legacy', 'old.local', 'Linux', 22, '2020-01-01T00:00:00.000Z', NULL);
+  INSERT INTO resource_messages VALUES ('msg', 'old', 'Ada', 'hello', '2020-01-02T00:00:00.000Z');`);
+  db.close();
+  let store = Storage.open(path);
+  try {
+    const legacy = store.getMachine("old");
+    assert.ok(legacy);
+    assert.equal(legacy.status, "not-ready");
+    assert.equal(legacy.sshUser, null);
+    assert.equal(legacy.verifiedAt, null);
+    assert.equal(legacy.name, "Legacy");
+    assert.equal(store.listMessages("old")[0].text, "hello");
+    store.close();
+    store = Storage.open(path);
+    assert.deepEqual(store.getMachine("old"), legacy);
+    assert.equal(store.listMessages("old").length, 1);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

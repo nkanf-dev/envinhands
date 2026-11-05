@@ -5,6 +5,7 @@
  * Importing this module does not start a listener.
  */
 import { createAgentBus } from "./agent-bus.ts";
+import { createMachineApi } from "./machine-api.ts";
 
 export interface AgentBusServerOptions {
   dbPath: string;
@@ -18,14 +19,22 @@ export interface AgentBusServerOptions {
 /** Start an experimental listener. It has no TLS; use HTTPS termination for untrusted networks. */
 export function startAgentBusServer(options: AgentBusServerOptions): { url: string; hostname: string; stop(): Promise<void> } {
   const bus = createAgentBus({ dbPath: options.dbPath, token: options.token });
+  let machines: ReturnType<typeof createMachineApi>;
+  try { machines = createMachineApi({ dbPath: options.dbPath, token: options.token }); }
+  catch (error) { bus.close(); throw error; }
   let server: ReturnType<typeof Bun.serve>;
   try {
     server = Bun.serve({
       hostname: options.hostname ?? "0.0.0.0",
       port: options.port ?? 8787,
-      fetch: (request) => bus.fetch(request),
+      fetch: (request) => {
+        const path = new URL(request.url).pathname;
+        return path === "/v1/machines" || path.startsWith("/v1/machines/") || path.startsWith("/v1/resources/")
+          ? machines.fetch(request) : bus.fetch(request);
+      },
     });
   } catch (error) {
+    machines.close();
     bus.close();
     throw error;
   }
@@ -43,7 +52,7 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
       if (!stopping) {
         stopping = (async () => {
           try { await server.stop(true); }
-          finally { bus.close(); }
+          finally { machines.close(); bus.close(); }
         })();
       }
       return stopping;

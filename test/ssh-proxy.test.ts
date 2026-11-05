@@ -1,0 +1,131 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { PassThrough, Writable } from "node:stream";
+import { createRelayServer, startNodeClient } from "../src/relay";
+import { startSshProxy } from "../src/ssh-proxy";
+
+const secret = "local-proxy-test-secret";
+const cleanup: Array<() => void> = [];
+afterEach(() => { while (cleanup.length) cleanup.pop()!(); });
+
+function withTimeout<T>(promise: Promise<T>, label: string, ms = 5000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), ms);
+    promise.then((value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); });
+  });
+}
+
+function startRelay() {
+  const relay = createRelayServer({ secret, setupTimeoutMs: 1000 });
+  cleanup.push(() => relay.stop());
+  return `ws://127.0.0.1:${relay.port}`;
+}
+
+async function startNode(base: string, port: number) {
+  const node = startNodeClient({ relayUrl: base, nodeId: "local", secret, sshPort: port });
+  cleanup.push(() => node.close());
+  await withTimeout(node.ready, "node registration");
+}
+
+function streams() {
+  const input = new PassThrough();
+  const chunks: Buffer[] = [];
+  let notify: (() => void) | undefined;
+  const output = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      chunks.push(Buffer.from(chunk));
+      notify?.();
+      callback();
+    },
+  });
+  cleanup.push(() => { input.destroy(); output.destroy(); });
+  return {
+    input, output,
+    async received(size: number) {
+      await withTimeout(new Promise<void>((resolve) => {
+        notify = () => { if (chunks.reduce((n, c) => n + c.length, 0) >= size) resolve(); };
+        notify();
+      }), "proxy output");
+      return Buffer.concat(chunks);
+    },
+  };
+}
+
+describe("SSH stdio proxy integration", () => {
+  test("bridges arbitrary binary and a server-first banner through relay and node", async () => {
+    const banner = Buffer.from([83, 83, 72, 0, 255, 13, 10]);
+    const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {
+      open(socket) { socket.write(banner); },
+      data(socket, data) { socket.write(data); },
+      error() {},
+    } });
+    cleanup.push(() => tcp.stop(true));
+    const base = startRelay();
+    await startNode(base, tcp.port);
+    const io = streams();
+    const proxy = startSshProxy({ relayUrl: base, nodeId: "local", secret, input: io.input, output: io.output });
+    // Observe rejection even if an assertion fails before the proxy ends.
+    const result = proxy.then(() => ({ error: undefined }), (error: unknown) => ({ error }));
+    expect(await io.received(banner.length)).toEqual(banner);
+    const payload = Buffer.from([0, 255, 128, 13, 10, 1, 0, 42, 254]);
+    io.input.write(payload);
+    expect(await io.received(banner.length + payload.length)).toEqual(Buffer.concat([banner, payload]));
+    io.input.end();
+    expect((await withTimeout(result, "EOF")).error).toBeDefined();
+  });
+
+  test("drains 1 MiB to a slow TCP receiver before input EOF", async () => {
+    const expected = Buffer.from(Uint8Array.from({ length: 1024 * 1024 }, (_, i) => (i * 131 + (i >>> 8)) % 256));
+    const chunks: Buffer[] = [];
+    let end!: () => void;
+    const ended = new Promise<void>((resolve) => { end = resolve; });
+    const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {
+      open(socket) { socket.pause(); setTimeout(() => socket.resume(), 200); },
+      data(_socket, data) { chunks.push(Buffer.from(data)); },
+      close() { end(); },
+      error() { end(); },
+    } });
+    cleanup.push(() => tcp.stop(true));
+    const base = startRelay();
+    await startNode(base, tcp.port);
+    const io = streams();
+    const proxy = startSshProxy({ relayUrl: base, nodeId: "local", secret, input: io.input, output: io.output });
+    const result = proxy.then(() => ({ error: undefined }), (error: unknown) => ({ error }));
+    // EOF can arrive before WebSocket readiness; bytes must not be discarded.
+    io.input.end(expected);
+    const settled = await withTimeout(result, "input EOF");
+    expect(settled.error).toBeDefined();
+    expect(String(settled.error)).toMatch(/half.close|EOF/i);
+    await withTimeout(ended, "TCP FIN after drain");
+    expect(Buffer.concat(chunks)).toEqual(expected);
+  }, 10000);
+
+  test("rejects authentication failure and a missing node", async () => {
+    const base = startRelay();
+    for (const options of [
+      { nodeId: "local", secret: "wrong" },
+      { nodeId: "missing", secret },
+    ]) {
+      const io = streams();
+      const result = startSshProxy({ relayUrl: base, ...options, input: io.input, output: io.output, setupTimeoutMs: 1000 })
+        .then(() => undefined, (error: unknown) => error);
+      const error = await withTimeout(result, "failed setup");
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).not.toContain(options.secret);
+    }
+  });
+
+  test("settles when the remote TCP side closes", async () => {
+    const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {
+      open(socket) { setTimeout(() => socket.end(), 50); },
+      data() {}, error() {},
+    } });
+    cleanup.push(() => tcp.stop(true));
+    const base = startRelay();
+    await startNode(base, tcp.port);
+    const io = streams();
+    const proxy = startSshProxy({ relayUrl: base, nodeId: "local", secret, input: io.input, output: io.output });
+    const result = proxy.then(() => "resolved", () => "rejected");
+    expect(["resolved", "rejected"]).toContain(await withTimeout(result, "remote close"));
+  });
+});

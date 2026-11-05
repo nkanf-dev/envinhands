@@ -99,7 +99,7 @@ export function createRelayServer(options: RelayOptions) {
     try { s.channel?.close(code, reason); } catch {}
   }
   const server = Bun.serve<SocketData>({
-    hostname: options.hostname ?? "127.0.0.1",
+    hostname: options.hostname ?? "0.0.0.0",
     port: options.port ?? 0,
     fetch(req, srv) {
       if (stopping) return new Response("Stopping", { status: 503 });
@@ -253,6 +253,9 @@ export function startNodeClient(options: NodeClientOptions) {
   let resolveReady!: () => void;
   let rejectReady!: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  let resolveClosed!: () => void;
+  // Only the control WebSocket lifetime is represented, not SSH session drain.
+  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
   function stop() {
     if (stopped) return;
     stopped = true;
@@ -373,6 +376,6 @@ export function startNodeClient(options: NodeClientOptions) {
     } catch { stop(); }
   };
   control.onerror = stop;
-  control.onclose = stop;
-  return { ready, close: stop };
+  control.onclose = () => { stop(); resolveClosed(); };
+  return { ready, closed, close: stop };
 }

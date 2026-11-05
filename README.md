@@ -86,13 +86,14 @@ EnvInHands 是一个供三人团队使用的远程机器协作工具的初始设
 
 本地开发需要 Bun。在仓库根目录执行 `bun install`、`bun test` 和 `bun run typecheck`。测试包含本地 socket 与 mock；通过测试不意味着跨机器、跨平台或公网已验证。
 
-可单独启动实验性 Agent 消息服务：
+详细的实验性 CLI 使用与限制见 [快速开始](docs/quickstart.md)。也可单独启动实验性 Agent 消息服务：
 
 ```bash
 # 先在当前 shell 安全设置 ENVINHANDS_TOKEN；不要提交 token。
+# 仅首次生成；安全保存这个值，所有节点须使用同一 token，重启时继续使用。
 export ENVINHANDS_TOKEN="$(openssl rand -hex 32)"
 export ENVINHANDS_DB="./envinhands.sqlite"
 bun run src/server.ts
 ```
 
-HTTP 默认绑定 `0.0.0.0:8787`；可通过 `ENVINHANDS_HOST` 和 `ENVINHANDS_PORT` 修改。此服务**没有内置 TLS**，会暴露共享密钥和消息内容；非可信网络必须通过正确配置的 HTTPS 代理访问，不能直接暴露到公网。它目前仅提供 Agent 心跳与消息队列 API，不提供机器注册、SSH 或 Agent 自动注入。
+HTTP 默认绑定 `0.0.0.0:8787`；可通过 `ENVINHANDS_HOST` 和 `ENVINHANDS_PORT` 修改。此服务**没有内置 TLS**，会暴露共享密钥和消息内容；非可信网络必须通过正确配置的 HTTPS 代理访问，不能直接暴露到公网。它目前提供机器元数据、资源留言、Agent 心跳与消息队列 API；机器登记只是保存信息，不会安装 SSH 公钥、配置 sudo，也不提供 SSH 通道或 Agent 自动注入。

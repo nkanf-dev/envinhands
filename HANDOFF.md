@@ -6,7 +6,7 @@
 
 - EnvInHands：<https://github.com/nkanf-dev/envinhands>，本地 `~/projs/envinhands`。
 - Prime Agent fork：<https://github.com/nkanf-dev/prime-agent>，从 `peterkc/prime-agent` fork。目标保持 TypeScript 0.9.8 系列。
-- Prime Agent fork 已浅克隆至 `~/projs/prime-agent`；实验分支 [`envinhands-integration`](https://github.com/nkanf-dev/prime-agent/tree/envinhands-integration) 已推送 `325c184`：opt-in 生命周期 heartbeat 扩展及本地测试。尚无 Prime 消息收发/ACK 接线或跨机实测。
+- Prime Agent fork 已浅克隆至 `~/projs/prime-agent`；实验分支 [`envinhands-integration`](https://github.com/nkanf-dev/prime-agent/tree/envinhands-integration) 已推送 `0527df4`：opt-in 生命周期 heartbeat 与显式 list/send/pull/ack 工具。真实 0.9.8 loader 已在隔离环境加载扩展并列出四个工具；尚未验证跨机或自动注入。
 
 ## 已有代码
 
@@ -18,13 +18,13 @@
 - `src/readiness.ts`：检查现有 SSH 账号在 Linux/macOS 是否能无交互 `sudo`；并不注册账号或安装公钥；Windows 明确未实现。`src/registration/linux.ts` 只生成计划，apply 始终阻止执行。
 - `src/session/tmux.ts`：构造 tmux SSH 命令参数，未实机验证；不保证机器重启后会话存续。
 - `src/agent-bus.ts` 和 `src/server.ts`：实验性 SQLite Agent 心跳与消息持久队列，内置 Bun HTTP 监听，默认 `0.0.0.0:8787`、共享 bearer，无 TLS。接受仅表示存储，消费可能重复；同一 token 可冒充任意 Agent。只能在可信网络或正确配置的 HTTPS 反向代理后面使用。
-- `src/prime-bridge.ts`：Agent bus 的 TS 客户端，提供显式 heartbeat/send/pull/ack；尚未接线进 Prime 内部消息。
-- `src/storage.ts`：单独的机器/留言 SQLite 存储，尚未接进控制面。
+- `src/prime-bridge.ts`：Agent bus 的 TS 客户端，提供显式 heartbeat/send/pull/ack；Prime fork 通过独立的 opt-in 工具调用同一总线，但不会自动把远端消息注入本地 session。
+- `src/storage.ts` 和 `src/machine-api.ts`：机器元数据与留言 SQLite 存储和 bearer API；已接入 `src/server.ts`，但仅登记数据，不安装 SSH 或设置管理员权限。
 - `docs/architecture.md`、`docs/transports.md`：需求、限制、候选和链接。
 
 ## 已验证（仅本机）
 
-Bun 1.4.4；前一已推送版本 `bun test`：42 项通过；`bun run typecheck`：通过。后续改动的实际测试结果以最新提交为准。测试包括本地 socket 和 mock，不证明真实 SSH、UU、rathole、Windows/macOS 或互联网可用。实验中曾复现反向中继背压和关闭丢数据；当前测试已覆盖部分回归，但实际网络背压和异常语义仍需审查。用户明确不需要 CI；原 GitHub Actions 工作流已移除。以本地测试为准。
+Bun 1.4.4；本次更新 `bun test`：104 项通过；`bun run typecheck`：通过。后续改动的实际测试结果以最新提交为准。测试包括本地 socket 和 mock；另已用单文件 CLI、临时 sshd 和密钥完成一次真实本机 OpenSSH 测试，正确主机密钥成功、错误密钥被拒绝。不证明真实 UU、rathole、Windows/macOS 或互联网可用。实验中曾复现反向中继背压和关闭丢数据；当前测试已覆盖部分回归，但实际网络背压和异常语义仍需审查。用户明确不需要 CI；原 GitHub Actions 工作流已移除。以本地测试为准。
 
 ```bash
 cd ~/projs/envinhands

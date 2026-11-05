@@ -87,3 +87,28 @@ test("bind failure closes the opened bus database", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test("machine catalog and notes share the real HTTP server and survive restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "env-machines-"));
+  const dbPath = join(dir, "catalog.sqlite");
+  const token = "machine-test-token";
+  let server = startAgentBusServer({dbPath, token, port: 0});
+  const call = (path: string, method = "GET", value?: unknown) => fetch(server.url + path, {
+    method, headers: {authorization: `Bearer ${token}`, ...(value ? {"content-type": "application/json"} : {})},
+    ...(value ? {body: JSON.stringify(value)} : {}),
+  });
+  try {
+    expect((await call("/v1/machines", "POST", {id:"nas",name:"NAS",host:"127.0.0.1",os:"linux",sshUser:"agent"})).status).toBe(202);
+    expect((await call("/v1/machines/nas/heartbeat", "POST")).status).toBe(200);
+    expect((await call("/v1/resources/nas/messages", "POST", {author:"agent-a",text:"Test note"})).status).toBe(201);
+    await server.stop();
+    server = startAgentBusServer({dbPath, token, port: 0});
+    expect(((await (await call("/v1/machines")).json()) as {machines: unknown[]}).machines).toEqual([]);
+    const machines = await (await call("/v1/machines?includePending=true")).json() as {machines: {id: string; lastHeartbeatAt: string | null}[]};
+    expect(machines.machines[0].id).toBe("nas");
+    expect(machines.machines[0].lastHeartbeatAt).toBeTruthy();
+    const notes = await (await call("/v1/resources/nas/messages")).json() as {messages: {text: string}[]};
+    expect(notes.messages[0].text).toBe("Test note");
+  } finally { await server.stop(); rmSync(dir, {recursive: true, force: true}); }
+});

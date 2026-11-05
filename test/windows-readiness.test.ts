@@ -98,8 +98,20 @@ test("Windows relay uses the shared POSIX proxy and the same fixed token check",
     const calls: Array<{ command: string; args: readonly string[]; timeout: number }> = [];
     const runner: CommandRunner = async (command, args, timeout) => { calls.push({ command, args, timeout }); return { exitCode: 0 }; };
     assert.equal((await checkAdminReadiness(target, runner)).ready, true);
-    assert.equal((await checkAdminReadiness({ ...target, relayNodeId: "node-1" }, runner)).ready, true);
-    assert.equal((await checkWindowsAdminReadiness({ ...target, relayNodeId: "node-1" }, runner)).ready, true);
+    const mainRelay = await checkAdminReadiness({ ...target, relayNodeId: "node-1" }, runner);
+    const windowsRelay = await checkWindowsAdminReadiness({ ...target, relayNodeId: "node-1" }, runner);
+    if (process.platform === "win32") {
+      // Direct SSH is supported; only the POSIX relay path must be refused.
+      assert.equal(mainRelay.status, "not-ready");
+      assert.equal(mainRelay.ready, false);
+      assert.equal(windowsRelay.status, "not-ready");
+      assert.equal(windowsRelay.ready, false);
+      assert.equal(calls.length, 1);
+      return;
+    }
+    assert.equal(mainRelay.ready, true);
+    assert.equal(windowsRelay.ready, true);
+    assert.equal(calls.length, 3);
     assert.deepEqual(calls[2], calls[1]);
     assert.equal(calls[1].command, "ssh");
     assert.equal(calls[1].timeout, 15_000);

@@ -70,8 +70,17 @@ test("relay ProxyCommand quotes its absolute binary path and never contains cred
     process.env.ENVINHANDS_PROXY_BINARY = binary;
     process.env.ENVINHANDS_RELAY_URL = "wss://relay.example.org";
     process.env.ENVINHANDS_RELAY_SECRET = "unique-secret-not-for-argv";
+    const calls: Array<readonly string[]> = [];
     let args: readonly string[] = [];
-    const result = await checkAdminReadiness({ ...target, relayNodeId: "node-1" }, async (_cmd, a) => { args = a; return { exitCode: 0 }; });
+    const result = await checkAdminReadiness({ ...target, relayNodeId: "node-1" }, async (_cmd, a) => { calls.push([...a]); args = a; return { exitCode: 0 }; });
+    if (process.platform === "win32") {
+      // The client cannot execute the POSIX ProxyCommand. It must fail before SSH.
+      assert.equal(result.status, "not-ready");
+      assert.equal(result.ready, false);
+      assert.equal(calls.length, 0);
+      return;
+    }
+    assert.equal(calls.length, 1);
     assert.equal(result.ready, true);
     const option = args.find(a => a.startsWith("ProxyCommand="));
     assert.ok(option);

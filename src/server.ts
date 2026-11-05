@@ -6,6 +6,7 @@
  */
 import { createAgentBus } from "./agent-bus.ts";
 import { createMachineApi } from "./machine-api.ts";
+import { createChangeApi } from "./change-api.ts";
 
 export interface AgentBusServerOptions {
   dbPath: string;
@@ -22,6 +23,9 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
   let machines: ReturnType<typeof createMachineApi>;
   try { machines = createMachineApi({ dbPath: options.dbPath, token: options.token }); }
   catch (error) { bus.close(); throw error; }
+  let changes: ReturnType<typeof createChangeApi>;
+  try { changes = createChangeApi({ dbPath: options.dbPath, token: options.token }); }
+  catch (error) { machines.close(); bus.close(); throw error; }
   let server: ReturnType<typeof Bun.serve>;
   try {
     server = Bun.serve({
@@ -29,11 +33,13 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
       port: options.port ?? 8787,
       fetch: (request) => {
         const path = new URL(request.url).pathname;
+        if (path === "/v1/changes" || path === "/v1/agent-registrations") return changes.fetch(request);
         return path === "/v1/machines" || path.startsWith("/v1/machines/") || path.startsWith("/v1/resources/")
           ? machines.fetch(request) : bus.fetch(request);
       },
     });
   } catch (error) {
+    changes.close();
     machines.close();
     bus.close();
     throw error;
@@ -52,7 +58,7 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
       if (!stopping) {
         stopping = (async () => {
           try { await server.stop(true); }
-          finally { machines.close(); bus.close(); }
+          finally { changes.close(); machines.close(); bus.close(); }
         })();
       }
       return stopping;

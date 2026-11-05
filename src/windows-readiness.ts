@@ -22,7 +22,7 @@ try {
   if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 0 }
   exit 1
 } catch { exit 1 }`;
-const ENCODED_SCRIPT = Buffer.from(SCRIPT, "utf16le").toString("base64");
+export const ENCODED_WINDOWS_ADMIN_CHECK = Buffer.from(SCRIPT, "utf16le").toString("base64");
 
 function validHost(host: unknown): host is string {
   if (typeof host !== "string" || host.length === 0 || host.length > 253) return false;
@@ -48,7 +48,7 @@ export async function checkWindowsAdminReadiness(target: ReadinessTarget, runner
   }
   const args = ["-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=10", ...proxyOptions, "-p", String(port), "-l", target.user, "--", target.host,
-    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", ENCODED_SCRIPT];
+    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", ENCODED_WINDOWS_ADMIN_CHECK];
   try {
     const result = await runner("ssh", args, TIMEOUT_MS);
     if (result && result.exitCode === 0) return { status: "ready", ready: true,

@@ -203,7 +203,13 @@ describe("tmux over relay CLI", () => {
   test("passes builder argv and inherited environment without exposing the secret", async () => {
     const c = context(); let captured: string[] = []; let passedEnv: NodeJS.ProcessEnv | undefined;
     const runSsh: CliDependencies["runSsh"] = async (argv, childEnv) => { captured = argv; passedEnv = childEnv; return 23; };
-    expect(await runCli(["tmux", "node-1", "job_1", "alice"], env, { ...c, ...ready, runSsh })).toBe(23);
+    const status = await runCli(["tmux", "node-1", "job_1", "alice"], env, { ...c, ...ready, runSsh });
+    if (process.platform === "win32") {
+      expect(status).toBe(1); expect(captured).toEqual([]);
+      expect(c.output()).not.toContain(env.ENVINHANDS_RELAY_SECRET);
+      return;
+    }
+    expect(status).toBe(23);
     expect(captured.slice(0, 4)).toEqual(["ssh", "-tt", "-o", "StrictHostKeyChecking=yes"]);
     expect(captured).toContain("-l"); expect(captured).toContain("alice");
     expect(captured).toContain("ProxyCommand='/opt/envin hands/it'\\''s%%cli' proxy 'node-1'");
@@ -233,6 +239,10 @@ describe("tmux over relay CLI", () => {
     const c = context(); let argv: string[] = [];
     const runSsh: CliDependencies["runSsh"] = async a => { argv = a; throw new Error(env.ENVINHANDS_RELAY_SECRET); };
     expect(await runCli(["tmux", "n", "s"], { ...env, ENVINHANDS_PROXY_BINARY: undefined, ENVINHANDS_RELAY_URL: "ws://localhost" }, { ...c, ...ready, compiled: true, execPath: "/opt/cli", runSsh })).toBe(1);
+    if (process.platform === "win32") {
+      expect(argv).toEqual([]); expect(c.output()).not.toContain(env.ENVINHANDS_RELAY_SECRET);
+      return;
+    }
     expect(argv.join(" ")).toContain("'/opt/cli'"); expect(c.output()).toContain("Warning");
     expect(c.output()).toContain("Command failed"); expect(c.output()).not.toContain(env.ENVINHANDS_RELAY_SECRET);
   });

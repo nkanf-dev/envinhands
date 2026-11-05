@@ -5,18 +5,11 @@
  * any other agent's SSH identity. Each agent's identity must be checked separately.
  * A heartbeat only records receipt. This handler needs a trusted HTTPS boundary.
  */
-import { createHash, timingSafeEqual } from "node:crypto";
+import { HttpError, response as reply, fields, bodyBytes as body, json, bearerAuth } from "./http.ts";
 import { Storage } from "./storage.ts";
 import { checkAdminReadiness, type ReadinessTarget, type ReadinessResult } from "./readiness.ts";
 
-const MAX_BODY = 16 * 1024;
 const ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
-class HttpError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
-}
-function reply(status: number, data: unknown, headers: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers } });
-}
 function id(value: unknown, field: string): string {
   if (typeof value !== "string" || !ID.test(value)) throw new HttpError(400, `Invalid ${field}`);
   return value;
@@ -30,41 +23,6 @@ function text(value: unknown, field: string, max: number): string {
   if (typeof value !== "string" || !value.trim() || value.length > max || value.includes("\0")) throw new HttpError(400, `Invalid ${field}`);
   return value.trim();
 }
-function fields(value: Record<string, unknown>, allowed: string[]): void {
-  if (Object.keys(value).some(key => !allowed.includes(key))) throw new HttpError(400, "Unexpected field");
-}
-async function body(req: Request): Promise<Uint8Array> {
-  const declared = req.headers.get("content-length");
-  if (declared !== null) {
-    if (!/^\d+$/.test(declared)) throw new HttpError(400, "Invalid Content-Length");
-    if (Number(declared) > MAX_BODY) throw new HttpError(413, "Request body too large");
-  }
-  if (!req.body) return new Uint8Array();
-  const reader = req.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_BODY) { void reader.cancel().catch(() => {}); throw new HttpError(413, "Request body too large"); }
-      chunks.push(value);
-    }
-  } finally { reader.releaseLock(); }
-  const result = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
-  return result;
-}
-async function json(req: Request): Promise<Record<string, unknown>> {
-  const bytes = await body(req);
-  let data: unknown;
-  try { data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
-  catch { throw new HttpError(400, "Expected a JSON object"); }
-  if (!data || typeof data !== "object" || Array.isArray(data)) throw new HttpError(400, "Expected a JSON object");
-  return data as Record<string, unknown>;
-}
 function method(allow: string): Response {
   return reply(405, { error: "Method not allowed" }, { allow });
 }
@@ -74,17 +32,15 @@ export function createMachineApi({ dbPath, token, readinessTtlMs, verifier = che
   dbPath: string; token: string; readinessTtlMs?: number;
   verifier?: (target: ReadinessTarget) => Promise<ReadinessResult>;
 }): { fetch(request: Request): Promise<Response>; close(): void } {
-  if (typeof token !== "string" || !token || /\s|[\u0000-\u001f\u007f]/.test(token)) throw new Error("A nonempty bearer token without whitespace is required");
+  const authorized = bearerAuth(token);
   if (typeof dbPath !== "string" || !dbPath) throw new Error("A database path is required");
-  const expected = createHash("sha256").update(`Bearer ${token}`).digest();
   const storage = Storage.open(dbPath, readinessTtlMs);
   let closed = false;
   return {
     async fetch(req: Request): Promise<Response> {
       try {
         if (closed) return reply(503, { error: "Catalog closed" });
-        const actual = createHash("sha256").update(req.headers.get("authorization") ?? "").digest();
-        if (!timingSafeEqual(actual, expected)) return reply(401, { error: "Unauthorized" }, { "www-authenticate": "Bearer" });
+        if (!authorized(req)) return reply(401, { error: "Unauthorized" }, { "www-authenticate": "Bearer" });
         const url = new URL(req.url);
         const path = url.pathname;
         if (path === "/v1/machines") {

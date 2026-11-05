@@ -82,11 +82,17 @@ EnvInHands 是一个供三人团队使用的远程机器协作工具的初始设
 6. Prime Agent TS 0.9.8 的实际集成能力和接口是什么？是否需要支持其他版本？
 7. 团队如何安全地共享连接信息，并处理凭据和主机身份验证？
 
+## 可复用注册、修改记录与远程执行
+
+EnvInHands 自身提供不可变 Agent 注册和追加式修改记录，支持幂等重试、分页、离线本地持久队列以及显式同步。普通 Agent 可用 CLI，不要求改 Prime 平台；Prime 可从本仓库加载独立 opt-in 适配。署名是声明，不是密码学认证；显式记录不代表已自动捕获任意工具或外部程序的所有修改。见 [修改记录](docs/change-records.md)。
+
+`src/transports/ssh-routes.ts` 将既有策略接到真实严格 SSH 探测，在有限总预算内按优先级尝试候选，保持同一受信主机别名。`src/remote-execution.ts` 在受控入口执行前持久记录 intent，执行后追加结果；一旦命令开始，不因失败或超时自动换路重跑。`exec` CLI 只执行用户授权的命令，远程输出是不可信数据，不是新授权；它不自动配权或保证远端任务断线后完成。
+
 ## 当前状态
 
-当前代码包含 SQLite 消息与机器目录服务、实验性 SSH 反向中继与 CLI、传输选择、UU/rathole 进程适配、管理员就绪检查和 tmux 命令构造。Prime Agent fork 的 `main` 已有 opt-in 心跳、消息和资源工具。真实 OpenSSH 和 Prime 加载器已在本机隔离测试；跨机器与公网尚未验证。自动配置公钥与 sudo、多后端自动连通和 tmux 的实机恢复验证仍未完成；Windows 管理员检查已有 mock 测试，尚未实机验证。
+当前代码包含 SQLite 消息与机器目录服务、实验性 SSH 反向中继与 CLI、传输选择、UU/rathole 进程适配、管理员就绪检查和 tmux 命令构造。Prime Agent fork 的 `main` 已有 opt-in 心跳、消息和资源工具。旧 Linux 开发环境曾通过隔离的真实 OpenSSH 和 Prime 心跳/消息扩展加载器测试；这不是当前 Windows 环境或资源扩展的加载验证，跨机器与公网尚未验证。自动配置公钥与 sudo、多后端自动连通和 tmux 的实机恢复验证仍未完成；Windows 管理员检查已有 mock 测试，尚未实机验证。
 
-控制面没有认证或 TLS；实验性中继只有共享密钥，存在明确的流控与关闭语义限制。**不要将原型直接暴露公网，也不要以此作为生产连接通道。** Agent 管理员就绪要求见 [架构草案](docs/architecture.md)，连接方案及其状态见 [候选清单](docs/transports.md)。
+`src/server.ts` 提供的机器、资源留言和 Agent bus API 使用共享 bearer token，但没有内置 TLS；持有 token 的任何人均可冒充 Agent、访问队列和修改目录。独立的 `src/control.ts` 内存原型没有认证或 TLS，不是该 SQLite 服务。实验性中继仅使用共享 secret，存在明确的流控与关闭语义限制。**不要将原型直接暴露公网，也不要以此作为生产连接通道。** Agent 管理员就绪要求见 [架构草案](docs/architecture.md)，连接方案及其状态见 [候选清单](docs/transports.md)。
 
 本地开发需要 Bun。在仓库根目录执行 `bun install`、`bun test` 和 `bun run typecheck`。测试包含本地 socket 与 mock；通过测试不意味着跨机器、跨平台或公网已验证。
 

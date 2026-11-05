@@ -11,7 +11,7 @@ type Agent = { agentId: string; machineId: string; task: string | null; status: 
 type Extension = (pi: { on(event: Lifecycle, callback: () => void): void }) => void;
 
 // An absent checkout is optional, but an existing broken extension must fail.
-const checkout = process.env.PRIME_AGENT_CHECKOUT ?? "/home/nkanf/projs/prime-agent";
+const checkout = process.env.PRIME_AGENT_CHECKOUT ?? resolve(import.meta.dirname, "../../prime-agent");
 const extensionPath = resolve(checkout, "packages/coding-agent/examples/extensions/envinhands-heartbeat.ts");
 const integrationTest = existsSync(extensionPath) ? test : test.skip;
 

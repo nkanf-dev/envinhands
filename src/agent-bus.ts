@@ -24,20 +24,13 @@
  * unrecognized JSON fields are rejected. Request IDs are retained indefinitely.
  */
 import { Database } from "bun:sqlite";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { HttpError, response, fields, json, bodyBytes, bearerAuth } from "./http.ts";
 
-const MAX_BODY = 16 * 1024;
 const MAX_ID = 128;
 const MAX_TASK = 2048;
 const MAX_TEXT = 8192;
 const encoder = new TextEncoder();
 
-class HttpError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
-}
-function response(status: number, body: unknown, headers?: Record<string, string>): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers } });
-}
 function bytes(s: string): number { return encoder.encode(s).byteLength; }
 function id(v: unknown, name: string): string {
   // Quotes and other punctuation are valid. SQL values are always bound.
@@ -48,53 +41,14 @@ function text(v: unknown, name: string, max: number): string {
   if (typeof v !== "string" || !v.trim() || bytes(v) > max || v.includes("\u0000")) throw new HttpError(400, `Invalid ${name}`);
   return v;
 }
-function fields(data: Record<string, unknown>, allowed: string[]): void {
-  if (Object.keys(data).some((k) => !allowed.includes(k))) throw new HttpError(400, "Unexpected field");
-}
-async function bodyBytes(req: Request): Promise<Uint8Array> {
-  const declared = req.headers.get("content-length");
-  if (declared !== null) {
-    if (!/^\d+$/.test(declared)) throw new HttpError(400, "Invalid Content-Length");
-    if (Number(declared) > MAX_BODY) throw new HttpError(413, "Request body too large");
-  }
-  if (!req.body) return new Uint8Array();
-  const reader = req.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_BODY) {
-        void reader.cancel().catch(() => {});
-        throw new HttpError(413, "Request body too large");
-      }
-      chunks.push(value);
-    }
-  } finally { reader.releaseLock(); }
-  const result = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
-  return result;
-}
-async function json(req: Request): Promise<Record<string, unknown>> {
-  const raw = await bodyBytes(req);
-  let parsed: unknown;
-  try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)); }
-  catch { throw new HttpError(400, "Expected a JSON object"); }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new HttpError(400, "Expected a JSON object");
-  return parsed as Record<string, unknown>;
-}
 type Message = { requestId: string; from: string; to: string; text: string; createdAt: string; acknowledgedAt: string | null };
 
 
 
 /** token must be a nonempty bearer token; dbPath is a SQLite filename or :memory:. */
 export function createAgentBus({ dbPath, token }: { dbPath: string; token: string }): { fetch(request: Request): Promise<Response>; close(): void } {
-  if (typeof token !== "string" || !token || /\s|[\u0000-\u001f\u007f]/.test(token)) throw new Error("A nonempty bearer token without whitespace is required");
+  const authorized = bearerAuth(token);
   if (typeof dbPath !== "string" || !dbPath) throw new Error("A database path is required");
-  const expected = createHash("sha256").update(`Bearer ${token}`).digest();
   const db = new Database(dbPath, { create: true, strict: true });
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
@@ -128,8 +82,7 @@ export function createAgentBus({ dbPath, token }: { dbPath: string; token: strin
     async fetch(req: Request): Promise<Response> {
       try {
         if (closed) return response(503, { error: "Bus closed" });
-        const actual = createHash("sha256").update(req.headers.get("authorization") ?? "").digest();
-        if (!timingSafeEqual(actual, expected)) return response(401, { error: "Unauthorized" }, { "www-authenticate": "Bearer" });
+        if (!authorized(req)) return response(401, { error: "Unauthorized" }, { "www-authenticate": "Bearer" });
         const url = new URL(req.url);
         const path = url.pathname;
         if (path === "/v1/agents/heartbeat") {

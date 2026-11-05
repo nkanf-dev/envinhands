@@ -7,11 +7,13 @@
  * Inject fetch rather than relying on a global. Use HTTPS on untrusted networks:
  * bearer credentials and message contents are exposed by plain HTTP.
  */
+export type Fetcher = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response>;
+
 export interface BridgeOptions {
   /** HTTP(S) origin only, with no credentials, query, fragment or base path. */
   baseUrl: string;
   token: string;
-  fetch: typeof fetch;
+  fetch: Fetcher;
   timeoutMs?: number;
 }
 
@@ -59,7 +61,7 @@ function object(value: unknown): value is Record<string, unknown> {
 export class PrimeBridge {
   private readonly origin: string;
   private readonly token: string;
-  private readonly fetcher: typeof fetch;
+  private readonly fetcher: Fetcher;
   private readonly timeoutMs: number;
 
   constructor(options: BridgeOptions) {
@@ -79,7 +81,7 @@ export class PrimeBridge {
     this.timeoutMs = timeout;
   }
 
-  private async request(path: string, method: "GET" | "POST", body?: object, parseJson = false): Promise<unknown> {
+  protected async request(path: string, method: "GET" | "POST", body?: object, parseJson = false, maxResponseBytes?: number): Promise<unknown> {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const operation = async (): Promise<unknown> => {
@@ -95,7 +97,26 @@ export class PrimeBridge {
       } catch { throw new BridgeError("Bus request failed"); }
       if (!response.ok || response.status < 200 || response.status >= 300) throw new BridgeError("Bus request rejected", response.status);
       if (!parseJson) return undefined;
-      try { return await response.json(); } catch { throw new BridgeError("Invalid bus response"); }
+      try {
+        if (maxResponseBytes === undefined) return await response.json();
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error();
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        try {
+          while (true) {
+            const next = await reader.read();
+            if (next.done) break;
+            size += next.value.byteLength;
+            if (size > maxResponseBytes) throw new Error();
+            chunks.push(next.value);
+          }
+        } finally { await reader.cancel(); }
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+        return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      } catch { throw new BridgeError("Invalid bus response"); }
     };
     try {
       return await Promise.race([

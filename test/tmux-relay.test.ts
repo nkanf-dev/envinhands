@@ -8,6 +8,10 @@ const valid: TmuxRelayOptions = { nodeId: "node-1", sessionKey: "work", binaryPa
 
 describe("tmux relay SSH argv", () => {
   test("builds structured ssh options and a stable known-hosts identity", () => {
+    if (process.platform === "win32") {
+      expect(() => buildTmuxRelayArgv(valid)).toThrow(/Windows.*unsupported/i);
+      return;
+    }
     const argv = buildTmuxRelayArgv({ ...valid, user: "alice", sshExecutable: "/usr/bin/ssh" });
     expect(argv.slice(0, 8)).toEqual([
       "/usr/bin/ssh", "-tt", "-o", "StrictHostKeyChecking=yes",
@@ -29,6 +33,10 @@ describe("tmux relay SSH argv", () => {
     try {
       process.env.ENVINHANDS_RELAY_SECRET = secret;
       process.env.ENVINHANDS_RELAY_URL = url;
+      if (process.platform === "win32") {
+        expect(() => buildTmuxRelayArgv(valid)).toThrow(/Windows.*unsupported/i);
+        return;
+      }
       const argv = buildTmuxRelayArgv(valid).join(" ");
       expect(argv).not.toContain(secret);
       expect(argv).not.toContain(url);
@@ -58,7 +66,9 @@ describe("tmux relay SSH argv", () => {
     expect(() => buildTmuxRelayArgv({ ...valid, platform: "win32" })).toThrow(/Windows.*unsupported/i);
     expect(() => buildTmuxRelayArgv({ ...valid, port: 22 } as TmuxRelayOptions)).toThrow();
     expect(() => buildTmuxRelayArgv({ ...valid, secret: "no" } as TmuxRelayOptions)).toThrow();
-    expect(buildTmuxRelayArgv({ ...valid, nodeId: "_a." + "a".repeat(125), sessionKey: "a".repeat(64), user: "_user" })).toContain("_user");
+    const boundary = { ...valid, nodeId: "_a." + "a".repeat(125), sessionKey: "a".repeat(64), user: "_user" };
+    if (process.platform === "win32") expect(() => buildTmuxRelayArgv(boundary)).toThrow(/Windows.*unsupported/i);
+    else expect(buildTmuxRelayArgv(boundary)).toContain("_user");
   });
 
   test("real OpenSSH expands percent safely and invokes the exact local path without a network connection", () => {

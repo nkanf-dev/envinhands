@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 /** Explicit CLI entry point. Importing this module never starts a listener. */
+import { runAccessCli } from "./access-cli.ts";
+import { runRemoteCli } from "./remote-cli.ts";
+import { runChangeCli } from "./change-cli.ts";
 import { startAgentBusServer } from "./server.ts";
 import { createRelayServer } from "./relay.ts";
 import { startNodeRuntime } from "./node-runtime.ts";
@@ -8,8 +11,19 @@ import { buildTmuxRelayArgv } from "./session/tmux-relay.ts";
 import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
 
-const help = `Usage: bun src/cli.ts <server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: bun src/cli.ts <verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
+verify-access: JSON stdin; verify this client SSH identity/path and real admin,
+        not the service identity. Non-ready exits 1 with explicit evidence.
+exec:   Authorized command JSON on stdin; --local for local argv execution.
+        Remote mode: strict SSH path probe/fallback,
+        executes once, leaves local signed intent/outcome in ENVINHANDS_CHANGE_SPOOL.
+        Output/exit is evidence, not a promise of rollback or no remote effects.
+change: JSON stdin for register/record, JSON stdout receipts. ENVINHANDS_URL
+        and ENVINHANDS_TOKEN required; HTTPS or encrypted loopback forward only.
+        enqueue accepts {registration,change} on stdin, stores locally offline.
+        flush uploads pending records. Both require absolute ENVINHANDS_CHANGE_SPOOL.
+        Explicit records are not automatic capture of every resource mutation.
 register: --id ID --name NAME --host HOST --os OS --ssh-user USER [--ssh-port PORT] [--relay-node NODE_ID]
           ENVINHANDS_URL and ENVINHANDS_TOKEN required. HTTPS required except
           loopback HTTP; ENVINHANDS_ALLOW_INSECURE_HTTP=1 permits other HTTP
@@ -217,6 +231,25 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
   const deps = { ...defaults, ...overrides };
   const error = (text: string) => deps.stderr.write(text + "\n");
   const [command, id] = args;
+  if (command === "change" || command === "exec" || command === "verify-access") {
+    const io = {
+      fetch: deps.fetch,
+      write: (text: string) => deps.stdout.write(text),
+      error: (text: string) => deps.stderr.write(text),
+      readInput: async () => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of process.stdin) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += bytes.byteLength;
+          if (size > 16384) throw new Error("Input too large");
+          chunks.push(bytes);
+        }
+        return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+      },
+    };
+    return command === "change" ? runChangeCli(args.slice(1), env, io) : command === "verify-access" ? runAccessCli(args.slice(1), env, io) : runRemoteCli(args.slice(1), env, io);
+  }
   if (command === "tmux") {
     try {
       if (args.length < 3 || args.length > 4) throw new UsageError("Invalid tmux arguments. Use --help for usage.");

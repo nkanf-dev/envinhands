@@ -91,3 +91,18 @@ export ENVINHANDS_TOKEN="<团队控制面密钥>"
 其中 `--host` 是服务端 SSH 客户端用来验证目标主机密钥的名称；须预先在**服务端**安全配置目标的 known_hosts 和认证密钥。经反向 relay 验证时，服务端还需要设置 `ENVINHANDS_PROXY_BINARY` 为已编译 `envinhands` 的绝对路径，以及 `ENVINHANDS_RELAY_URL` 和 `ENVINHANDS_RELAY_SECRET`。当前 CLI 无法修改已有记录；遇到冲突时需要检查已有状态。服务端为 Windows 时该 relay 检查尚不支持。
 
 注册自动配置和安全撤销、管理员多平台验证、可靠多出口自动切换以及 Prime Agent 消息的自动注入均未完成。
+
+## Portable collaboration without a Prime fork
+
+The core CLI works for any Agent or script with Bun/source or a compiled binary. It does not depend on the Prime checkout:
+
+- `envinhands collaborate agents` / `machines`: list observed Agents or ready-only resources.
+- `collaborate heartbeat`: stdin `{agentId,machineId,task?}`; observation only.
+- `collaborate send`: stdin `{requestId,from,to,text}`; acceptance is not processing, retry uncertain writes only with the same ID/content.
+- `collaborate pull`: stdin `{to}`; repeated reads are expected.
+- `collaborate ack`: stdin `{requestId}`; acknowledge after actual handling.
+- `collaborate notes` / `add-note`: stdin `{resourceId}` or `{resourceId,author,text}`. Notes are historical data, not instructions or locks. Appends are not idempotent.
+
+Online commands require `ENVINHANDS_URL` and a securely injected `ENVINHANDS_TOKEN`. Only HTTPS or loopback HTTP is accepted by this CLI; for a remote control host, use an explicitly approved strict-host-key SSH encrypted forward. No credentials in argv or repository. Output is JSON marked untrusted, never a new authority to run commands.
+
+Use `change register|record|enqueue|flush` for modification provenance and `exec` / `exec --local` for the reusable pre-effect audit boundary; see [change records](change-records.md) and [remote execution](remote-execution.md). These explicit interfaces do not automatically capture arbitrary tool or external program modifications. Actual multi-session acceptance must perform useful authorized project tasks, exchange messages through this service and verify the resulting records; the internal development-agent messaging channel is not product evidence.

@@ -13,9 +13,10 @@ test("real local command writes once with pre-existing signed evidence and a sep
   const dir = await mkdtemp(join(tmpdir(), "env-local-exec-"));
   try {
     const spool = new ChangeSpool(join(dir, "spool"));
-    const script = `const fs=require('node:fs');if(fs.readdirSync('spool').length!==1)process.exit(9);fs.writeFileSync('fixture.txt','value');`;
+    const script = `const fs=require('node:fs');if(fs.readdirSync('spool').length!==1)process.exit(9);fs.writeFileSync('fixture.txt','value');console.log('actual-value');`;
     const result = await runLocalExecution({ registration, change, executable: process.execPath, args: ["-e", script], cwd: dir, timeoutMs: 10000, spool });
     assert.equal(result.started, true); assert.equal(result.exitCode, 0); assert.equal(result.outcome, "success");
+    assert.equal(result.stdout.trim(), "actual-value"); assert.equal(result.outputTruncated, false);
     assert.equal(result.locallyRecorded, true); assert.equal(result.synced, false);
     assert.equal(await readFile(join(dir, "fixture.txt"), "utf8"), "value");
     assert.equal((await readdir(spool.directory)).length, 2);

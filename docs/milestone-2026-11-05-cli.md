@@ -1,0 +1,13 @@
+# Real Prime CLI to control-VM milestone
+
+Three actual Prime source CLI RPC instances, with independent daemon sockets, configuration, workspaces and persisted sessions, completed their normal AgentSession/Agent tool loops against the Debian control-VM EnvInHands service. They discovered participants, exchanged a message ring, pulled/acknowledged explicitly, shared resource experience and stored signed session results.
+
+One actual Agent used the EnvInHands execution extension to run `id -u && uname -s` on the VM through the configured strict SSH identity. Its real output was UID1000/Linux, exit0, and its signed intent/outcome records synchronized to the control service. Separately the execution extension created/read/removed an owned VM fixture and synchronized its records.
+
+The CLI run used a deterministic zero-cost provider to choose tool calls, not a fabricated Prime client or direct wrapper invocation. It proves the actual CLI/daemon/session/Agent/tool/service path works, **not intelligent model collaboration**. The operator-selected actual model `gpt-6.1-terra` is configured for the same independent-client flow, but the supplied API returned HTTP401 and that real-model acceptance remains pending. There is no automatic fallback from a failed real model to the fixture.
+
+Core CLI now exposes collaboration discovery/messages/notes without requiring a Prime checkout. Local and remote execution receipts return actual output with a bounded capture size and explicit truncation flag, so Agents can use real results rather than only exit status. The execution adapter belongs to EnvInHands, uses local SSH profiles and records changes before/after work.
+
+Windows native full suite171pass/0fail/0skip and normal typecheck passed. The three-client VM run passed with three distinct CLI PIDs and sessions, actual remote execution and `synced:true`. The existing control service ran the preceding5b8deaf milestone; new client adapters consumed its unchanged message/catalog and attribution contracts. Current actual SSH privilege remained non-admin; no sudoers/keys/public-port change occurred. This milestone does not claim all six physical devices, public-network coverage, automatic attribution for arbitrary bypassing writes, or successful per-Agent administrator setup.
+
+Runtime credentials/configuration, sessions, raw logs and temporary databases are intentionally outside this repository. Operator instructions are in `docs/prime-cli-validation.md`, `docs/prime-execution.md` and `docs/quickstart.md`. Both projects use phase commits; prior failures remain in local signed evidence ledgers.

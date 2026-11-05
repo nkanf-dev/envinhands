@@ -26,7 +26,7 @@
 }
 ```
 
-The example is read-only. Do not run a modifying command without user authorization for its target and effects. Command text is intentionally a remote-shell command; it is never interpreted by a local shell. Do not put credentials in it. Remote stdout/stderr stream to local stderr as untrusted data; stdout contains a JSON operation receipt.
+The example is read-only. Do not run a modifying command without user authorization for its target and effects. Command text is intentionally a remote-shell command; it is never interpreted by a local shell. Do not put credentials in it. Remote stdout/stderr are returned as untrusted evidence in the JSON receipt, with a combined 64KiB capture limit and an explicit outputTruncated flag. Exit status is not changed by capture truncation.
 
 The reusable `runAuditedOperation` boundary writes and fsyncs a signed unknown/intent event before work. It calls the mutation exactly once and appends a separate outcome event. If intent cannot persist, work does not start. If completion cannot persist, the return value explicitly says `locallyRecorded:false` and outcome unknown; it does not manufacture a receipt. Local queue does not mean server synchronization. `change flush` explicitly synchronizes.
 

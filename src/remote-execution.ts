@@ -1,4 +1,4 @@
-import { runOwnedProcess } from "./process-runner.ts";
+import { runOwnedProcess, type ProcessReceipt } from "./process-runner.ts";
 import { buildSshRouteArgv, selectSshRoute, type SshRoute, type SshAccess } from "./transports/ssh-routes.ts";
 import { runAuditedOperation } from "./audited-operation.ts";
 import { ChangeSpool } from "./change-spool.ts";
@@ -25,15 +25,17 @@ export async function runRemoteExecution(options: RemoteExecution) {
       new TextEncoder().encode(options.command).length > 8192 || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 2147483647)
     throw new Error("Invalid remote command");
   let routeId: string | null = null, exitCode: number | null = null, timedOut = false, started = false;
+  let output: Pick<ProcessReceipt, "stdout" | "stderr" | "outputTruncated"> = { stdout: "", stderr: "", outputTruncated: false };
   const audit = await runAuditedOperation(options.registration, options.change, options.spool, async () => {
     const selected = await selectSshRoute(options.routes, options.access,
       { priority: options.priority, totalBudgetMs: options.probeBudgetMs });
     routeId = selected.route.id;
     const completion = await runOwnedProcess("ssh", [...selected.argv, options.command], options.timeoutMs);
     started = completion.started;
+    output = { stdout: completion.stdout, stderr: completion.stderr, outputTruncated: completion.outputTruncated };
     exitCode = completion.exitCode; timedOut = completion.timedOut;
     // SSH255 or timeout can follow a real side effect, so report unknown, not failed/retryable.
     return { outcome: exitCode === 0 ? "success" : exitCode === 255 || exitCode === null ? "unknown" : "failed" };
   });
-  return { ...audit, routeId, started, exitCode, timedOut };
+  return { ...audit, routeId, started, exitCode, timedOut, ...output };
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 /** Explicit CLI entry point. Importing this module never starts a listener. */
+import { runCollaborationCli } from "./collaboration-cli.ts";
 import { runAccessCli } from "./access-cli.ts";
 import { runRemoteCli } from "./remote-cli.ts";
 import { runChangeCli } from "./change-cli.ts";
@@ -11,8 +12,10 @@ import { buildTmuxRelayArgv } from "./session/tmux-relay.ts";
 import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
 
-const help = `Usage: bun src/cli.ts <verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: bun src/cli.ts <collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
+collaborate: heartbeat|agents|send|pull|ack|machines|notes|add-note.
+        JSON stdin except agents/machines; explicit actions, no automatic execution.
 verify-access: JSON stdin; verify this client SSH identity/path and real admin,
         not the service identity. Non-ready exits 1 with explicit evidence.
 exec:   Authorized command JSON on stdin; --local for local argv execution.
@@ -231,7 +234,7 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
   const deps = { ...defaults, ...overrides };
   const error = (text: string) => deps.stderr.write(text + "\n");
   const [command, id] = args;
-  if (command === "change" || command === "exec" || command === "verify-access") {
+  if (command === "change" || command === "exec" || command === "verify-access" || command === "collaborate") {
     const io = {
       fetch: deps.fetch,
       write: (text: string) => deps.stdout.write(text),
@@ -248,7 +251,7 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
         return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
       },
     };
-    return command === "change" ? runChangeCli(args.slice(1), env, io) : command === "verify-access" ? runAccessCli(args.slice(1), env, io) : runRemoteCli(args.slice(1), env, io);
+    return command === "collaborate" ? runCollaborationCli(args.slice(1), env, io) : command === "change" ? runChangeCli(args.slice(1), env, io) : command === "verify-access" ? runAccessCli(args.slice(1), env, io) : runRemoteCli(args.slice(1), env, io);
   }
   if (command === "tmux") {
     try {

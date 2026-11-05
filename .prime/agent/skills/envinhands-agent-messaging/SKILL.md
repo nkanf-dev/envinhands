@@ -49,4 +49,4 @@ description: 使用 EnvInHands 实验性 Agent 消息总线发现 Agent、发送
 
 消息扩展不会自动上报活动。另一个独立 opt-in 扩展 `packages/coding-agent/examples/extensions/envinhands-heartbeat.ts` 需另行加载，并在启动前设置同一服务配置及非秘密 `ENVINHANDS_MACHINE_ID`。它在 session/agent 生命周期事件上尽力发送固定事件名，并在会话活动期间每 30 秒发送心跳；失败可能静默、丢失或乱序。`status: observed` 和 `lastHeartbeatAt` 只表示服务曾收到观察，**不是实时在线、健康或可用的保证**；过期或缺失为未知。
 
-不会自动注入远端消息到 session、通知接收方或执行消息；需显式 pull 和 ack。本地 mock 和隔离加载验证不等于跨机器交付、端到端安全或生产就绪；跨机实测尚未完成。不要假设独立的 resources 扩展已合入或可用，也不要把本机 Agent 通信当作跨机实测。
+不会自动注入远端消息到 session、通知接收方或执行消息；需显式 pull 和 ack。当前已有 Windows 多真实 Prime→Debian VM 的消息处理环与真实模型 CTF100 实测；这不是三处网络、六设备或生产就绪。resources 扩展已在这些配置中使用，但缺配置仍可能不加载，应检查实际工具。项目 skills 自动发现与正常 profile 加载已另行无模型验证，不代表上述关闭 skills 的模型验收已读取本说明。见仓库 docs/goal-conformance.md 与 docs/prime-profile.md。

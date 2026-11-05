@@ -52,7 +52,7 @@ Windows Bun1.4.4 native stage run：169 项通过、0失败、0跳过，typechec
 - `src/prime-bridge.ts`：Agent bus 的 TS 客户端，提供显式 heartbeat/send/pull/ack；Prime fork 通过独立的 opt-in 工具调用同一总线，但不会自动把远端消息注入本地 session。
 - `src/storage.ts` 和 `src/machine-api.ts`：机器元数据与留言 SQLite 存储和 bearer API；已接入 `src/server.ts`，但仅登记数据，不安装 SSH 或设置管理员权限。
 - `docs/design.md`、`docs/protocol.md`：以长期目标为准的详细设计和待开发契约；`docs/architecture.md`、`docs/transports.md` 与 `docs/quickstart.md` 记录架构草案、连接候选及原型用法。
-- `.prime/agent/skills/envinhands-resources`、`envinhands-agent-messaging`：Agent 操作 skills；frontmatter 已验证，尚未在新会话验证发现。
+- `.prime/agent/skills/envinhands-resources`、`envinhands-agent-messaging`：Agent 操作 skills；新空 Prime agentDir/Env cwd 自动发现与正文读取已验证；正常 profile 又在无关工作目录验证显式 skill 加载。与历史关闭 skills 的模型验收分别报告。
 
 ## 历史验证（旧 Linux 开发环境）
 

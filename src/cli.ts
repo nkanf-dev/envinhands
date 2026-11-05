@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 /** Explicit CLI entry point. Importing this module never starts a listener. */
+import { runPrimeProfileCli } from "./prime-profile-cli.ts";
 import { runRemoteAccessCli } from "./remote-access-cli.ts";
 import { runDeviceCli } from "./device-cli.ts";
 import { runCollaborationCli } from "./collaboration-cli.ts";
@@ -14,8 +15,10 @@ import { buildTmuxRelayArgv } from "./session/tmux-relay.ts";
 import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
 
-const help = `Usage: bun src/cli.ts <access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: bun src/cli.ts <prime-profile ENV_ROOT PRIME_ROOT|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
+prime-profile: emits normal opt-in Prime settings with collaboration, audit, execution,
+               read-only files and explicit project skills; no credential or config writes.
 access: encrypted SSH forwarding to configured loopback control service;
         one absolute JSON profile path, emits local URL, stop with SIGINT/SIGTERM.
 device: register reads JSON id/host and optional SSH fields; collects local OS/name.
@@ -240,6 +243,7 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
   const deps = { ...defaults, ...overrides };
   const error = (text: string) => deps.stderr.write(text + "\n");
   const [command, id] = args;
+  if (command === "prime-profile") return runPrimeProfileCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)});
   if (command === "access") return runRemoteAccessCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
   if (command === "change" || command === "exec" || command === "verify-access" || command === "collaborate" || command === "device") {
     const io = {

@@ -59,7 +59,7 @@ class RealCLI {
    "--extension",fileURLToPath(new URL("../src/integrations/prime.ts",import.meta.url)),
    "--extension",fileURLToPath(new URL("../src/integrations/prime-execution.ts",import.meta.url)),
    "--extension",fileURLToPath(new URL("../src/integrations/prime-files.ts",import.meta.url)),
-   ...(ctfConfig?["--extension",fileURLToPath(new URL("../src/integrations/prime-attribution.ts",import.meta.url))]:[])];
+   "--extension",fileURLToPath(new URL("../src/integrations/prime-attribution.ts",import.meta.url))];
   this.child=spawn(node!,args,{cwd:workdir,env,stdio:["pipe","pipe","pipe"]});
   recordLocal("start-real-cli",workdir,"success",`Started actual Prime CLI PID ${this.child.pid}, own agentDir/sessionDir/daemon socket; no credential values recorded.`);
   this.exited=new Promise(resolveExit=>{this.child.once("close",resolveExit);this.child.once("error",()=>resolveExit(1));});

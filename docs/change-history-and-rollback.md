@@ -26,6 +26,12 @@
 
 `a3c0e42` push 已由远端完整 SHA 核对。按最初交接、design/protocol 和后续要求重新列出逐项目标状态，并修正 README/HANDOFF/quickstart 的历史描述。隔离 SQLite 一致性备份→新路径恢复→两次独立服务重启已通过，机器/心跳/消息 ack/note/注册/change 全字段核对一致；没有生产库切换，详见运维手册 10.3。另以全新 Prime agentDir 在 Env 工作目录自动发现两个原始项目 skill，正常资源加载路径及正文读取 exit 0，无模型调用、无 skill 改动。这里是文档和实际验收补录，不改变功能代码或数据库 schema。
 
+## 推送后独立复核修复
+
+用户要求继续核对原始与后续要求。三方读取原始目标、源码及报告后发现正常启动自动观察配置缺口、相对 edit 资源路径歧义和 NAT/历史状态措辞过大。本次新增正常 `prime-profile` 配置片段生成器（只输出，不覆盖 settings）；用无关 workdir/新 agentDir 的实际 Prime 正常 loader 核对七扩展、观察 handler 与两原 skill。标准 CLI 验收脚本不再仅 CTF 加观察。已知 edit 按真实 ctx.cwd 得绝对资源引用，两个同 host 不同 workdir 回归与实际 SDK 通过，首红保留。其余工具不猜因果；没有扩大为全局监控。
+
+修改 messaging skill 的过时跨机描述、标明旧401/design现状快照为历史，并收窄 NAT/技能使用/身份引用 hash/live版本结论。没有改 package/lock、Prime平台、公钥、权限、live服务或数据库。撤回本次时删除新增 profile 调用/配置列表并恢复相应适配版本；保留已产生的绝对资源记录，不将它们改写回相对路径。旧模型验收不被追溯声明使用新 profile。
+
 ## 依赖和配置变化
 
 - Env原package.json/bun.lock未新增第三方依赖。Bun1.4.4在用户目录准备，官方release digest/SHASUMS核验，不改系统PATH。

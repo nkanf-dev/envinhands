@@ -1,11 +1,12 @@
 /** Prime tool observations, not filesystem monitoring or remote-mutation inference. */
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { ChangeSpool } from "../change-spool.ts";
 import { ChangeClient } from "../change-client.ts";
 import { parseRegistration, parseChange, type AgentRegistrationInput, type ChangeInput } from "../change-model.ts";
 
 interface Context {
+  cwd: string;
   sessionManager: { getSessionId(): string };
   ui: { setStatus(key: string, text: string | undefined): void; notify(message: string, type?: "warning" | "error" | "info"): void };
 }
@@ -41,7 +42,8 @@ export default function attribution(pi: API): void {
       const registration = parseRegistration({ registrationId: "observe-" + digest(JSON.stringify({ agentId, machineId, signature, sessionId })), agentId, machineId, signature, sessionId });
       const callKey = key(event, ctx);
       const path = event.toolName === "edit" && typeof event.input.path === "string" ? event.input.path : undefined;
-      const resourceId = path && path.length <= 2048 && path.trim() && safe(path) ? path : "tool-call:" + callKey;
+      const resourcePath = path && path.trim() && safe(path) ? resolve(ctx.cwd, path) : undefined;
+      const resourceId = resourcePath && resourcePath.length <= 2048 && safe(resourcePath) ? resourcePath : "tool-call:" + callKey;
       const tool = ["edit", "bash", "ipython"].includes(event.toolName) ? event.toolName : "custom";
       const intent = parseChange({ requestId: "intent-" + callKey, operationId: "tool-" + callKey, registrationId: registration.registrationId,
         targetMachineId: machineId, resourceId, action: scope, summary: `${tool} invocation observed; result pending`, reason: scope,

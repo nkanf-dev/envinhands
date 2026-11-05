@@ -1,5 +1,8 @@
 # Real Prime CLI to control-VM milestone
 
+> Historical stage record. The HTTP401/pending paragraph below describes that earlier credential state, not the current result. Later approved credentials completed the actual-model message ring and all-user CTF100; see [team milestone](milestone-2026-11-05-team.md) and [goal conformance](goal-conformance.md). Do not repeat old401 probes.
+
+
 Three actual Prime source CLI RPC instances, with independent daemon sockets, configuration, workspaces and persisted sessions, completed their normal AgentSession/Agent tool loops against the Debian control-VM EnvInHands service. They discovered participants, exchanged a message ring, pulled/acknowledged explicitly, shared resource experience and stored signed session results.
 
 One actual Agent used the EnvInHands execution extension to run `id -u && uname -s` on the VM through the configured strict SSH identity. Its real output was UID1000/Linux, exit0, and its signed intent/outcome records synchronized to the control service. Separately the execution extension created/read/removed an owned VM fixture and synchronized its records.

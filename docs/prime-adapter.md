@@ -4,6 +4,10 @@
 `ChangeClient` and the shared provenance model; it does not add daemon commands
 or replace Prime's local agent-message protocol.
 
+For the combined normal opt-in settings profile (collaboration, records, execution,
+files, observation and explicit skills), see [prime-profile.md](prime-profile.md).
+The tools described below remain the separate explicit-record adapter.
+
 ## Load in a prepared Prime Agent 0.9.8 runtime
 
 Securely inject `ENVINHANDS_URL`, `ENVINHANDS_TOKEN`, `ENVINHANDS_AGENT_ID`,

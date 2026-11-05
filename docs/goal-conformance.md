@@ -9,26 +9,26 @@
 | 目标 | 状态 | 实际结果及证据 | 还需完成 |
 |---|---|---|---|
 | 多真实 Prime 客户端对接 VM | 已实测可用 | 三个 Windows 独立 CLI/daemon/session/工作目录与 Agent ID，经加密路径访问 Debian 控制 VM；真实 gpt-6.1-terra 工具循环完成处理消息环。E1 | 本机多实例不是三台异地主机。 |
-| 不同用户自主协商，无固定负责人 | 已实测可用 | 三位 Agent 分别受 Windows 静态源只读、VM 动态执行、独立复核要求约束，自主发消息分工；自建获准 CTF 评分 100，全员均有有效工作。E2 | 这是一个真实模型正常使用案例，不承诺任意题或无授权资源。 |
+| 不同用户自主协商，无固定负责人 | 已实测可用 | 三位 Agent 分别受 Windows 静态源只读、VM 动态执行、独立复核要求约束，自主发消息分工；自建获准 CTF 评分 100，全员均有有效工作。E2 | 这是实际模型正常工具循环，但 controller 仍按轮提供继续机会，不是完全无人调度；运行时关闭 skills/内置工具，与 E14/E15 的独立 skills 加载证据不能合并。不承诺任意题或无授权资源。 |
 | 三人六设备与 Intel/AMD 兼容 | 受阻 | Windows x64 与 Debian VM amd64 已运行；Linux 原生采集已核对。E3、E4 | Linux desktop、Intel NAS 实机、三台 Mac、各自网络尚未逐台验收；兼容代码不等于硬件实测。 |
 | 设备元数据登记到管理主机 | 已实测可用 | Windows/Linux 原生信息实际登记，API 与独立 SQLite 读回 pending；device register 共用采集路径，macOS 有映射 fixture。E4、E5 | 这里只是元数据，不称最终“注册成功”。macOS 真机仍缺。 |
 | 所有者确认后的公钥/admin 自动配置与撤销 | 未完成 | Linux 注册助手生成预览；apply 明确 blocked，不会假报已配置。src/registration/linux.ts | 完成本机确认、安全应用、部分失败恢复与撤销；实际执行须有对应所有者授权。 |
-| 每个目标 Agent 自身 SSH 与管理员验证 | 部分完成 | 实际身份/session/route/TTL 客户端检查、严格 host key、真实普通用户 SSH；sudo 不足正确 not-ready。E6 | 不能用服务端身份替代其他 Agent。指定身份逐一授权、正向 admin 验证未完成；当前 VM sudo -n 失败。 |
+| 每个目标 Agent 自身 SSH 与管理员验证 | 部分完成 | 实际身份/session/route/TTL 客户端检查、严格 host key、真实普通用户 SSH；sudo 不足正确 not-ready。E6 | 不能用服务端身份替代其他 Agent。指定身份逐一授权、正向 admin 验证未完成；当前 VM sudo -n 失败。sshIdentityRef 仅 hash 用户/身份路径/known_hosts 路径/alias，不是实际公钥指纹，同路径换 key 不自动失效；本地证据尚未接入服务逐 Agent 就绪模型。 |
 | Windows 实际 SSH 管理员令牌 | 受阻 | 固定命令检查有效令牌的代码和 mock 通过，非仅检查组成员。test/windows-readiness.test.ts | 需获准 Windows SSH 会话与真实管理员身份；尚未实测。 |
-| NAT 节点主动出站与 SSH | 已实测可用 | Windows 编译 proxy→加密承载→VM relay/node→真实 sshd，错误 secret/host key 拒绝。E7 | 证据限当前 Windows↔VM 拓扑，完整公网及六设备另测。 |
+| NAT 主动出站目标与受控 relay SSH 通路 | 部分完成 | Windows 编译 proxy→加密承载→VM relay/node→同 VM 真实 sshd，错误 secret/host key 拒绝；受控字节通路实测成功。E7 | 还不是独立 NAT 站点仅出站接入共同外部入口；异地、多故障域、入口断开与恢复未闭合。 |
 | 多入口真实探测及新连接失败回退 | 部分完成 | 严格 SSH 实探测与候选失败后成功路径已跑通；开始的命令不换路重跑。E6、src/transports/ssh-routes.ts | 两个真实异地/独立故障域后端、入口中断恢复和站点换网还未完成；UU/rathole 只有进程适配。 |
-| 三位异地成员的共同加密入口 | 受阻 | 正式 access API/CLI 用各自已有 SSH 路由连接远端 loopback 控制服务，Windows→VM 请求实际 200。E8 | 需实际可达的获准 SSH jump、VPN 或 TLS 入口；不会无基础设施凭空穿透 NAT，不自行开放公网端口。 |
+| 三位异地成员的共同加密入口 | 受阻 | 正式客户端本地 access 桥接 API/CLI 用已有 SSH 路由连接远端 loopback 控制服务，Windows→VM 请求实际 200。E8 | 需实际可达的获准 SSH jump、VPN 或 TLS 入口；不会无基础设施凭空穿透 NAT，不自行开放公网端口。 |
 | 发现、活动、消息和经验共享 | 已实测可用 | 真实 Prime 环与 CTF 完成目录读取、活动、send/pull/ack 和资源经验；消息接受/已处理严格区分。E1、E2 | 心跳只表示近期观察，不保证在线/空闲或资源锁；完整资源图、容量治理另列演进。 |
 | Windows 静态资源与 VM 动态资源工作 | 已实测可用 | 只读文件适配、真实远程 probe/scorer、独立复核与实际输出。E2、E8 | 长期 job ID/断线结果索引仍未完成；未知任务不能盲重跑。 |
 | Unix tmux 保留工作现场 | 部分完成 | 严格 SSH PTY 正常两次 detach/reconnect 后同 worker PID，清理仅自身会话。E9 | Mac、全部客户端 TTY、突发断网、重启不在证据内；不保证原 SSH 迁移或主机重启保活。 |
-| 本地/远程修改有注册与 Agent 署名 | 部分完成 | 不可变注册、intent/outcome、离线 spool、明确同步；实际 CTF 三 Agent 均有服务端观察记录。E10 | 签名为声明而非密码学身份。工具事件不等于逐文件因果；绕过适配的外部写入仍需显式记录，不声称全局监控已完成。 |
+| 本地/远程修改有注册与 Agent 署名 | 部分完成 | 不可变注册、intent/outcome、离线 spool、明确同步；实际 CTF 三 Agent 均有服务端观察记录。E10 | 签名为声明而非密码学身份。工具事件不等于逐文件因果；直接 device/collaborate CLI、API、背景/部署写入并未统一自动接署名边界。E1 历史启动未加载自动观察，只有显式记录；E2 CTF 加载。现正常 profile 已补观察与 skills，已知相对 edit 按真实 cwd 定位；不声称全资源自动覆盖。 |
 | 持久化、消息重启恢复与不盲重放 | 已实测可用 | HTTP/SQLite、幂等发送/冲突、重复 pull/ack、重启测试；持久 spool/operation reservation 保留未知结果。E3、src/change-spool.ts | 实际长期运营、容量/归档、全部故障边界不由测试通过推定。 |
 | 一致性备份与恢复演练 | 已实测可用 | a3c0e42 隔离 fixture 经 VACUUM INTO 备份、新路径恢复，两次独立服务重启，API/SQL 全字段相等、三库 integrity ok。E13 | 不涉及生产 live 库、并发 writer 压力、掉电恢复或定时备份；凭据与 spool 独立保管。 |
 | 轻量节点、解耦复用与便携运行 | 部分完成 | Env 核心独立于 Prime，CLI/外部适配共享核心，无新增 Env 第三方依赖；Bun 单文件与用户态运行时已用。E3、E7 | 全目标架构发布、安装包与内存/CPU 预算、长期服务/开机恢复尚未全面交付。 |
 | Agent skills 与当前平台集成 | 已实测可用 | 全新空 agentDir、Env 工作目录经 Prime 正常 SettingsManager/DefaultResourceLoader 自动发现两个原始项目 skill，正文完整可读，diagnostics 为空，原文件 hash 未变。E14 | 这是发现/可读取，不声称模型已读取遵守正文或正文所有历史命令已复验。 |
 | relay 完整流控与关闭语义 | 部分完成 | 实际 SSH 正常通路和现有限额可用。E7 | 现 relay 不支持透明 half-close；完整慢端/溢出/关闭错误与生产容量尚未达到设计目标。 |
-| 服务/数据/配置回退与使用手册 | 部分完成 | 完整运维、阶段变更与回退说明已交付，区分代码、DB、凭据与 spool。E11 | 更新本阶段最终提交/push 回执，实际部署切换与完整回退演练未执行。 |
-| 两仓库 Conventional Commits 与及时 push | 已实测可用 | Prime 61a643b 已推送且干净；Env 5b8deaf/1fe9e56/7aee3e8/a3c0e42 已推送，git ls-remote 完整 SHA 核对 a3c0e42。E12 | 网络首失败独立保留；后续文档提交仍按实际回执核对。 |
+| 服务/数据/配置回退与使用手册 | 部分完成 | 完整运维、阶段变更与回退说明已交付，区分代码、DB、凭据与 spool。E11 | 源码验收不等于 live 升级；最近已知 live 仍5b8deaf，a3c0e42为隔离测试。新 device inventory 的 includeNotReady 在旧服务会拒绝；真实部署切换、稳定服务/凭据复用与完整回退尚未执行。 |
+| 两仓库 Conventional Commits 与及时 push | 已实测可用 | Prime 61a643b 已推送且干净；Env 5b8deaf/1fe9e56/7aee3e8/a3c0e42 与文档89791d9 已推送，git ls-remote 完整 SHA 核对89791d9。E12 | 网络首失败独立保留；后续文档提交仍按实际回执核对。 |
 
 ## 可核查证据索引
 
@@ -50,6 +50,15 @@
 - **E13**：vm-backup-restore-20261105T192959Z/VM-BACKUP-RESTORE-REPORT.md 与 verify-backup-restore.ts；修后正常路径 exit 0、独立 readonly 核对 exit 0；首失败独立保留。
 
 - **E14**：prime-agent-resume-20261105T173812935010Z/skill-discovery-verification/SKILL-DISCOVERY-REPORT.md、verify-project-skills.mts、skill-discovery-node-first.raw.txt / .result.json；实际 Prime 0.9.8+fork.4 正常发现路径 exit 0，未调用模型。
+
+- **E15**：主控 normal-prime-profile-native-first.raw.log / .result.json、verify-normal-prime-profile.mts：新空配置/无关 workdir、正常 settings 加载七扩展/观察 handlers/两 skill，exit 0、无网络/模型；src/integrations/prime-profile.ts 与 docs/prime-profile.md。相对 edit 修复证据见 Prime ATTRIBUTION-RELATIVE-EDIT-DELIVERY.md，首红后绿及真实 SDK 绝对路径记录。
+- **E16**：post-push-original-goal-root-review.json、Prime INDEPENDENT-GOAL-CONFORMANCE-REVIEW.md、independent-environment-conformance-20261105T195150Z/INDEPENDENT-ENVIRONMENT-VERDICT.md。推送后独立读取原始输入/源码/实际报告，明确实际开发缺口，不仅列硬件授权。
+
+## 推送后复核结论
+
+原目标未全部符合。可确认真实 Prime→VM 的协作/授权普通用户工作正常；不能把 pending 设备等同注册最终成功。仍有开发和集成缺口：自动配权/撤销、逐公钥身份就绪模型与其使用路径、直接 CLI/API/背景修改署名、完整部署复现与恢复。真实六设备、每身份管理员正向与两实际地点/两个可用入口还需获准环境。正常 profile 与相对 edit 定位是本次独立审查后完成的具体修复，不倒写此前模型报告。
+
+下一步优先：1）新版本独立副本按正常配置复现并持久保管其服务/配置/数据引用，另行协调 live 升级；2）确认各设备、Agent 公钥身份及管理员授权清单，完成相应开发与实际验证；3）在已有共同加密入口下开展两实际地点正常工作、署名同步、一次自有断线后的新连接回退/结果核对。不要用重复付费 CTF 或增加泛化矩阵替代这些工作。
 
 ## 尚需的外部条件
 

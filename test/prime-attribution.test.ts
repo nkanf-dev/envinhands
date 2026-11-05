@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import attribution from "../src/integrations/prime-attribution.ts";
 import { startAgentBusServer } from "../src/server.ts";
 import { ChangeClient } from "../src/change-client.ts";
@@ -11,10 +11,10 @@ import { ChangeClient } from "../src/change-client.ts";
 type Host = Parameters<typeof attribution>[0];
 type Handler = (event: never, ctx: never) => Promise<unknown>;
 const keys = ["ENVINHANDS_AGENT_ID", "ENVINHANDS_MACHINE_ID", "ENVINHANDS_AUDIT_SIGNATURE", "ENVINHANDS_CHANGE_SPOOL", "ENVINHANDS_URL", "ENVINHANDS_TOKEN"] as const;
-function fixture() {
+function fixture(cwd = process.cwd()) {
   const handlers = new Map<string, Handler>(); const statuses: string[] = [], notices: string[] = [];
   attribution({ on: (name: string, handler: Handler) => { handlers.set(name, handler); } } as Host);
-  const ctx = { sessionManager: { getSessionId: () => "actual-fixture-session" }, ui: { setStatus: (_key: string, value: string) => { statuses.push(value); }, notify: (value: string) => { notices.push(value); } } };
+  const ctx = { cwd, sessionManager: { getSessionId: () => "actual-fixture-session" }, ui: { setStatus: (_key: string, value: string) => { statuses.push(value); }, notify: (value: string) => { notices.push(value); } } };
   return { statuses, notices, emit: (name: string, event: unknown) => handlers.get(name)!(event as never, ctx as never) };
 }
 test("tool hooks persist intent before actual work, retain only input hashes and publish ordered observations", async () => {
@@ -57,5 +57,27 @@ test("failed intent blocks work, unknown custom resources stay call references, 
     const records = await Promise.all((await readdir(join(dir, "spool"))).map(async name => JSON.parse(await readFile(join(dir, "spool", name), "utf8"))));
     assert.equal(records.length, 2); assert.ok(records.every(record => record.change.resourceId.startsWith("tool-call:"))); assert.ok(records.some(record => record.change.outcome === "failed"));
     assert.match(host.statuses.at(-1)!, /pending locally/); assert.equal(JSON.stringify(records).includes("private code"), false);
+  } finally { await rm(dir, { recursive: true, force: true }); for (const key of keys) { if (prior[key] === undefined) delete process.env[key]; else process.env[key] = prior[key]; } }
+});
+
+test("same-host relative edits identify their actual workdirs without storing edit content", async () => {
+  const prior = Object.fromEntries(keys.map(key => [key, process.env[key]])); const dir = await mkdtemp(join(tmpdir(), "env-attribution-workdirs-"));
+  try {
+    Object.assign(process.env, { ENVINHANDS_AGENT_ID: "observer", ENVINHANDS_MACHINE_ID: "host", ENVINHANDS_AUDIT_SIGNATURE: "Observer", ENVINHANDS_CHANGE_SPOOL: join(dir, "spool") });
+    delete process.env.ENVINHANDS_URL; delete process.env.ENVINHANDS_TOKEN;
+    const expected: string[] = [], hashes: string[] = [];
+    for (const name of ["workspace-a", "workspace-b"]) {
+      const cwd = join(dir, name); await mkdir(cwd); const host = fixture(cwd), path = join(cwd, "config.json");
+      const call = { type: "tool_call", toolCallId: name, toolName: "edit", input: { path: "config.json", oldText: "private-before", newText: "private-after" } };
+      assert.equal(await host.emit("tool_call", call), undefined);
+      const intents = await Promise.all((await readdir(join(dir, "spool"))).map(async file => JSON.parse(await readFile(join(dir, "spool", file), "utf8"))));
+      assert.ok(intents.some(item => item.change.resourceId === path && item.change.outcome === "unknown"));
+      await writeFile(path, "private-after");
+      await host.emit("tool_result", { ...call, type: "tool_result", content: [{ type: "text", text: "private-output" }], isError: false });
+      expected.push(path); hashes.push("input-sha256:" + createHash("sha256").update(JSON.stringify(call.input)).digest("hex"));
+    }
+    const records = await Promise.all((await readdir(join(dir, "spool"))).map(async file => JSON.parse(await readFile(join(dir, "spool", file), "utf8"))));
+    assert.equal(records.length, 4); assert.deepEqual([...new Set(records.map(item => item.change.resourceId))].sort(), expected.sort());
+    assert.ok(records.every(item => hashes.includes(item.change.evidenceRef))); assert.equal(JSON.stringify(records).includes("private-after"), false);
   } finally { await rm(dir, { recursive: true, force: true }); for (const key of keys) { if (prior[key] === undefined) delete process.env[key]; else process.env[key] = prior[key]; } }
 });

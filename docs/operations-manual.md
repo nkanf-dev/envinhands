@@ -193,6 +193,8 @@ Linux 注册 TS/Rust 现仅生成计划，apply 拒绝；自动装公钥、管�
 
 ### 7.2 显式加载扩展
 
+推荐用 `<env-command> prime-profile <Env绝对根> <Prime绝对根>` 输出正常 opt-in settings 片段，合并到每个客户端自己的私有 settings.json；不覆盖已有配置。它同时列出七个扩展（含工具观察）及两个显式 skill 路径，即使客户端工作目录不同也可加载。不要再传 --no-skills/--no-extensions 将其禁用。配置前置与实际无模型 loader 验证见 [prime-profile.md](prime-profile.md)。生成片段不证明 required 环境已设置、服务已升级或 Agent 已注册。
+
 根据任务加载绝对路径：Prime 原有 `envinhands-heartbeat.ts`、`envinhands-messages.ts`、`envinhands-resources.ts`，及 Env 的 `src/integrations/prime.ts`（记录）、`prime-execution.ts`（获准远端执行）、`prime-attribution.ts`（工具事件观察）。缺配置时可能不注册工具，应查看真实 loader/status，不直接调用付费模型试探。
 
 真实 CLI 启动形态、Node+tsx、RPC、Python kernel 前置、实际 `agent_end` 与结束方法见 [`prime-cli-validation.md`](prime-cli-validation.md)。`scripts/verify-prime-clients.mts` 是真实 ExtensionRunner **前置**，不能替代完整 Agent CLI/runtime/session。

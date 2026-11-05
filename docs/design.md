@@ -165,6 +165,8 @@ Prime Agent 0.9.8 采用显式、opt-in 扩展对接，业务总线独立于 Pri
 
 ## 14. 当前实现与落差（源码快照）
 
+> 本节保留最初交接时的历史源码快照，以下“未实测/未接通”等不可作为当前验收结论。后续已验证版本、运行中的旧服务版本和全部未完成目标分别见 [目标对照](goal-conformance.md)、[运维手册](operations-manual.md) 和 [演进记录](change-history-and-rollback.md)。上文的目标不因这些进展而缩减。
+
 下列只是交接依据，不改变上面的目标；`README.md`、`docs/architecture.md`、`docs/transports.md`、`docs/quickstart.md` 和 `HANDOFF.md` 含不同时期的描述，细节以当前源码为准。
 
 | 区域及路径 | 目前事实和证据 | 与目标的落差 |

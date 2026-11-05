@@ -132,7 +132,7 @@ Windows Git Bash 可能改写传给 SSH 的远程绝对路径或 named-pipe 反�
 
 CLI 不输出选中的随机端口；需要随机端口 handoff 时，采用显式调用 `startAgentBusServer({dbPath,token,hostname:"127.0.0.1",port:0})` 的受控启动器，读取它返回的 `url`。不要解析猜测或固定等待。
 
-当前验收外部 fixture 的私有 JSON 是 `{url,token,dbPath}`，它不是所有 CLI 都能直接读取的标准服务配置。fixture 启动时新建 `0700` 目录、随机 token、`0600` 配置，输出非敏感 ready marker；正常退出会关闭 DB 并删除该配置，**不会替你永久保管 secret 或自动删 DB**。后续重启需要操作员另存受限凭据和原数据库，不能重跑“全新 fixture”后误称恢复原服务。
+历史验收外部 fixture 的私有 JSON 是 `{url,token,dbPath}`，它不是所有 CLI 都能直接读取的标准服务配置。fixture 启动时新建 `0700` 目录、随机 token、`0600` 配置，输出非敏感 ready marker；正常退出会关闭 DB 并删除该配置，**不会替你永久保管 secret 或自动删 DB**。后续重启需要操作员另存受限凭据和原数据库，不能重跑“全新 fixture”后误称恢复原服务。新部署应使用正式 `service` 私有配置入口（见 service-deployment.md），不退出删除 config，已实际双OS进程复用 config/DB 重启。
 
 ### 5.3 就绪与在役约束
 
@@ -175,7 +175,7 @@ CLI `register` 会先创建再自动 verify；仅需元数据 pending 时不要�
 
 SSH 身份共享必须由所有者明确批准，不能把 Agent ID 不同当成私钥不同，也不能为演示自动复制私钥。当前 `sudo -n` 不足不阻止普通 readonly 任务，但必须阻止宣称 admin ready。
 
-Linux 注册 TS/Rust 现仅生成计划，apply 拒绝；自动装公钥、管理员配置、恢复/撤销尚未交付。不要用临时改 sudoers 刷绿。没有用户授权与既有管理员引导入口时，报告需操作员处理，不绕过。
+原 Linux TS/Rust 注册助手仍只生成计划，旧 apply 拒绝；现正式 provision 使用新增 Unix/Windows 原生 helper，显式确认应用与 owned 撤销已隔离测试，见第17节。真实系统未配权，不能据此说实际注册/admin通过。不要用临时改 sudoers 刷绿。没有用户授权与既有管理员引导入口时，报告需操作员处理，不绕过。
 
 ## 7. 独立 Prime 客户端配置与协作
 
@@ -262,7 +262,7 @@ node 只连接本机配置 SSH，不给 relay 任意内网地址。公网用经�
 
 Env Unix `tmux NODE SESSION [USER]` 还需编译 proxy 的绝对路径/`ENVINHANDS_PROXY_BINARY`，并提前带外核对派生 known-host alias 的实际 host key；细节见快速开始。当前 VM 未配置新的自身 SSH key，不能假装它能用 Env Unix CLI 自登录。
 
-本轮实测是正常 SSH detach/reconnect 两次保持同 PID。它不保证突发断网、目标重启或 tmux server 退出后继续运行；中断期间任务结果必须单独查询，不能用“tmux 可附着”推断工作已完成。
+本轮先实测正常 SSH detach/reconnect 两次保持同 PID，后又强制终止自有本地 SSH 客户端并经新严格 SSH 重连附着，同 worker PID6836仍在；核对后已清理自有会话/worker。它不保证真实异地网络故障、目标重启或 tmux server 退出后继续运行；中断期间任务结果必须单独查询，不能用“tmux 可附着”推断工作已完成。
 
 ## 10. SQLite、spool 和证据备份/恢复
 
@@ -333,6 +333,14 @@ try {
 ```
 
 首 inline 引号与自有 hash helper 失败原件已分别保留，修后新 fixture 正常路径 exit 0。该结果不证明并发 writer 压力、掉电/崩溃、定时备份、schema 回退或生产切换；凭据、SSH trust 和 spool 仍须另外保管。
+
+### 10.4 配置、数据库、工作文件和离线日志的整体恢复
+
+在精确 e4ddb77 新0700自造 fixture 已实际执行：正式服务OS进程6988写入机器/心跳/消息未ack与已ack/note/声明not-ready access；一次受审计工作留下2条 pending intent/outcome 和1个 operations reservation。停止新写后备份SQLite、自造私有配置/sourceRef/工作文件/spool与operations journal，逐文件hash核对后复制至全新目录。
+
+恢复只修改配置中的DB/sharedRoot绝对路径，其他逻辑值和token一致；路径重写后 config hash 本来就会变化，不称逐字节不变。新正式服务进程7007启动后，7张表全行和API读回相同；flush原请求ID后 pending=0，journal hash未变。原 operation 再次请求在 callback 前被拒绝，callback计数0，不重放实际工作。两自有服务已正常退出，独立readonly完整性检查通过。没有复制或停止原工作服务/旧控制服务、没有生产secret迁移、崩溃/并发写压力或跨schema回退。
+
+可复现入口和所有raw/exit见交接证据 `full-fixture-recovery-20261105T210440Z/COMPLETE-FIXTURE-RECOVERY.md` 与 `verify-full-fixture-recovery.ts`。首copy目标已存在失败原件保留，修外部脚本后在新目录正常一次通过。真实部署照此保管完整spool目录和operations，不只备份可见pending JSON。
 
 ## 11. 故障定位与处置
 
@@ -452,3 +460,9 @@ read 的 stdin 是 `{resourceId,path}`；write 再提供 UTF-8 `text` 与此前 
 Unix 使用现有账户真实 home、保留 authorized_keys、visudo 候选校验和 owned receipt；Windows 使用现有 LocalUser/SID/实际 profile、常见 OpenSSH 管理员键路径及私有 ACL/receipt。Windows 若显式 grantAdministrator=true 可走本地组授权；revoke 默认不猜组权归属，明确 revokeAdministrator=true 是所有者新的撤权决定，缺此确认或发现后改则 partial。自定义 sshd key 位置并未自动探测，不能假说默认路径必定生效。
 
 两个平台当前均有真实本机/VM隔离 fixture 文件效果与 owned 撤销测试；Windows 账户/组 primitive 是 fixture mock，Unix fixture 非root。未对实际系统 keys/sudoers/groups 运行应用。安装结果 ready 始终 false；每个实际 Agent 还要用自己的公钥和真实通路验证 SSH/非交互管理员能力。receipt/操作日志保留，apply/revoke audit reservation 分动作记录，不因未知结果重复安装。详见 registration-apply.md、windows-registration.md 与 client-access.md。
+
+## 18. 编译 CLI 与原生 helper
+
+当前 Bun 编译入口将 Unix Python 与 Windows PowerShell helper 作为源码资产内嵌。外部解释器不能打开 Bun 虚拟文件路径，因此调用前由共享 helper 生命周期生成自有临时脚本，结束后清理；不把私钥、token 或用户请求内嵌到二进制。请求继续从 stdin 发送，真实管理员/确认与平台条件不变。单文件 Env 仍需要已安装的相应 Python3/visudo 或 PowerShell 才能执行本机注册；不是零OS依赖承诺。
+
+Windows 已实际运行编译后的 fixture程序完成隔离文件/ACL应用与owned撤销，完整编译CLI主机ID列表也实际通过。构建成功不单独证明helper可执行；各平台编译实际效果分别记录，Linux结果以对应后续回执为准。不要把测试fixture选项当作真实配权授权。

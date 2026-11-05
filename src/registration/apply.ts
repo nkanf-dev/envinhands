@@ -1,4 +1,6 @@
-import { fileURLToPath } from "node:url";
+import helperSource from "./unix-helper.py" with {type:"text"};
+import {materializeRegistrationHelper} from "./helper-asset.ts";
+
 import { isAbsolute } from "node:path";
 import { prepareLinuxRegistration } from "./linux.ts";
 
@@ -25,6 +27,7 @@ export async function runUnixRegistration(request: UnixRegistrationRequest, opti
   const fixture = options.fixtureRoot !== undefined;
   const failed = (message: string): UnixRegistrationResult => ({ status: "failed", ready: false, fixture, message });
   let child: Bun.Subprocess<"pipe", "pipe", "pipe"> | undefined;
+  let helper: Awaited<ReturnType<typeof materializeRegistrationHelper>> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (!["linux", "darwin"].includes(process.platform) || !request || request.confirm !== true ||
@@ -37,8 +40,8 @@ export async function runUnixRegistration(request: UnixRegistrationRequest, opti
         (options.visudoPath !== undefined && !isAbsolute(options.visudoPath))) throw new Error();
     const input = JSON.stringify({ request, options: { fixtureRoot: options.fixtureRoot, visudoPath: options.visudoPath } });
     if (Buffer.byteLength(input) > 16384) throw new Error();
-    const helper = fileURLToPath(new URL("./unix-helper.py", import.meta.url));
-    child = Bun.spawn([options.pythonPath ?? "python3", helper], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    helper = await materializeRegistrationHelper("unix-helper.py",helperSource);
+    child = Bun.spawn([options.pythonPath ?? "python3", helper.path], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     child.stdin.write(input);
     child.stdin.end();
     const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => {
@@ -58,5 +61,6 @@ export async function runUnixRegistration(request: UnixRegistrationRequest, opti
   } finally {
     if (timer) clearTimeout(timer);
     if (child && child.exitCode === null) { child.kill("SIGKILL"); await child.exited; }
+    await helper?.close();
   }
 }

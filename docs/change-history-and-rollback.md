@@ -68,3 +68,11 @@
 本轮继续补共享 resource ID 与当前层目录发现（最多100/hasMore/noabsolute）、私有多主机host catalog（只输出hostId），普通 CLI/Prime一次session选择两个主机无需切环境。Windows native确认apply/ownedrevoke/ACL/explicit新撤权决定在隔离fixture实际测试；真实账户/组/sshd未动，仍不能说实际admin已验证。provision审计按action+operation分离reservation，grant与revoke能各记一次而不会把revoke误当重复grant。
 
 目录发现是新增只读路由，旧158运行服务不支持；新独立Windows浏览服务实际可用，不伪称旧服务已热升级。host catalog及配置/ACL有凭据，不提交；撤回此轮客户端时保留配置引用和审计/receipt，不以删除记录恢复重试。Windows helper落地不隐含真实应用批准。
+
+## e4ddb77 后的恢复与编译路径修复
+
+精确 e4d Linux206pass/1skip/type0。获准仅本轮owned158资源服务切换到e4d，先记录零连接、备份自造DB/privateconfig/sourceRef，原表全行与配置保留；旧5b控制服务完全不触。实际旧后端不可达→新严格forward恢复读取同workhash、目录发现正常，无写重放。完整新fixture又完成config/DB/work/spool+operations恢复、flushpending0、原操作callback0。另实际SSH客户端强杀后tmux同workerPID恢复并清理。
+
+编译检查发现原new URL helper路径对外部解释器不适用；改为text asset内嵌、短期自有脚本materialize并finallycleanup，未改helper权限/业务逻辑。Windows编译后的隔离apply/revoke与完整CLI主机列表实际通过。测试将累计4次PowerShell进程的独立既有key场景拆为单独test，避免默认5秒超时，不增加timeout或skip；首失败原件保留。回退包装器需同步发布原生helper文件，不能回退代码却漏发资产；历史receipt/operations不可删除以“修复重试”。
+
+Prime原锁依赖审计是另仓库owner任务。原锁29报告不等于29已证exploit；undici/MCP获准同major修复与独立原生gate后另行提交，不把其未来结果混入Env此版本。未运行auditfix/改Env依赖。

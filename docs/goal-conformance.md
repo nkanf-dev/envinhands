@@ -20,10 +20,10 @@
 | 三位异地成员的共同加密入口 | 受阻 | 正式客户端本地 access 桥接 API/CLI 用已有 SSH 路由连接远端 loopback 控制服务，Windows→VM 请求实际 200。E8 | 需实际可达的获准 SSH jump、VPN 或 TLS 入口；不会无基础设施凭空穿透 NAT，不自行开放公网端口。 |
 | 发现、活动、消息和经验共享 | 已实测可用 | 真实 Prime 环与 CTF 完成目录读取、活动、send/pull/ack 和资源经验；消息接受/已处理严格区分。E1、E2 | 心跳只表示近期观察，不保证在线/空闲或资源锁；完整资源图、容量治理另列演进。 |
 | 不同主机不同工作内容互读、修改与共享 | 已实测可用 | Windows↔Debian 各不同工作文件，真实 SharedFilesClient read→expected-hash write→readback，两端资源主机独立读盘与署名/hash核对；Windows真实 Prime loader/runner/wrapped工具也实际修改VM并读回。E17。原CTF只读/动态执行证据另见E2 | 当前明确共享root内 UTF-8单文件≤64KiB，非任意全盘/二进制同步，不等于异地站点；长期job索引另缺。 |
-| Unix tmux 保留工作现场 | 部分完成 | 严格 SSH PTY 正常两次 detach/reconnect 后同 worker PID，清理仅自身会话。E9 | Mac、全部客户端 TTY、突发断网、重启不在证据内；不保证原 SSH 迁移或主机重启保活。 |
+| Unix tmux 保留工作现场 | 部分完成 | 严格 SSH PTY 正常两次 detach/reconnect 后同 worker PID；另实际强制终止自有SSH客户端，重连附着同workerPID6836仍存活，核对后清理自有会话/worker。E9、E22 | Mac、全部客户端 TTY、真实异地链路故障、主机重启不在证据内；不保证原 SSH 迁移或主机重启保活。 |
 | 本地/远程修改有注册与 Agent 署名 | 部分完成 | 不可变注册、intent/outcome、离线 spool、明确同步；实际 CTF 三 Agent 均有服务端观察记录。E10 | 签名为声明而非密码学身份。工具事件不等于逐文件因果；正式服务统一 API intent/outcome 严格署名，device/collaborate/files 写 CLI 显式 Agent/session；正常 Prime 签名 transport 先加载，knownedit 有 cwd 绝对路径及实际前后 hash。三真实 CLI 严格服务零模型付费运行各自 API/tool 记录已独立读回。工具外/系统/部署仍需显式记录，不声称全资源自动捕获。E1 历史只显式记录/E2观察，不能追溯改写。 |
 | 持久化、消息重启恢复与不盲重放 | 已实测可用 | HTTP/SQLite、幂等发送/冲突、重复 pull/ack、重启测试；持久 spool/operation reservation 保留未知结果。E3、src/change-spool.ts | 实际长期运营、容量/归档、全部故障边界不由测试通过推定。 |
-| 一致性备份与恢复演练 | 已实测可用 | a3c0e42 隔离 fixture 经 VACUUM INTO 备份、新路径恢复，两次独立服务重启，API/SQL 全字段相等、三库 integrity ok。E13 | 不涉及生产 live 库、并发 writer 压力、掉电恢复或定时备份；凭据与 spool 独立保管。 |
+| 一致性备份与恢复演练 | 已实测可用 | a3c0e42 隔离 fixture 经 VACUUM INTO 备份、新路径恢复，两次独立服务重启，API/SQL 全字段相等、三库 integrity ok。E13 | 另完整新fixture已包含私有config/sourceRef/DB/工作文件/spool+operations恢复、新OS服务、flushpending0及拒operation重放callback0（E24）。不涉及生产 live 库、并发 writer 压力、掉电或定时备份。 |
 | 轻量节点、解耦复用与便携运行 | 部分完成 | Env 核心独立于 Prime，CLI/外部适配共享核心，无新增 Env 第三方依赖；Bun 单文件与用户态运行时已用。E3、E7 | 全目标架构发布、安装包与内存/CPU 预算、长期服务/开机恢复尚未全面交付。 |
 | Agent skills 与当前平台集成 | 已实测可用 | 全新空 agentDir、Env 工作目录经 Prime 正常 SettingsManager/DefaultResourceLoader 自动发现两个原始项目 skill，正文完整可读，diagnostics 为空，原文件 hash 未变。E14 | 这是发现/可读取，不声称模型已读取遵守正文或正文所有历史命令已复验。 |
 | relay 完整流控与关闭语义 | 部分完成 | 实际 SSH 正常通路和现有限额可用。E7 | 现 relay 不支持透明 half-close；完整慢端/溢出/关闭错误与生产容量尚未达到设计目标。 |
@@ -60,6 +60,12 @@
 - **E19**：prime-agent-resume-20261105T173812935010Z/vm-prime-cli-deployment/ACTUAL-VM-PRIME-CLI-DELIVERY.md：真实 Debian Prime CLI PID6213/session01a1ad7a-c576-7253-83c3-640685801078，三 actual prompt/Agent/tool/agent_end 完成 Windows 工作 read/write/readback；独立 Windows 磁盘216bytes/SHA b97c594d...a4b97 和服务实际 session 署名核对。零费用 scripted provider，不是新真实模型智能证明。Node/npm原锁453包，10manifest/lock不变；原锁npm报告29漏洞未处理，不称生产安全通过。系统Python无rlm，本任务未调用Python，不假REPL可用。
 - **E20**：实际一 Prime SDK session01a1ad7c-5091-70d7-b1c1-3a76abb39a4e通过私有host catalog选择 Windows/Debian，读不同内容，无环境endpoint切换；actual-prime-one-session-two-host-selection.raw.log。目录API/CLI/工具发现的普通fixture通过，actual updated Windows服务catalog/list/read通过；跨机新端点实际 Debian→Windows listResources→list→按发现entry读取通过，216bytes/hasMorefalse/绝对root不暴露，原Windows磁盘不变；DEBIAN-WINDOWS-READONLY-DISCOVERY.md / debian-discovers-windows-38963-first exit0。
 - **E21**：windows-registration-20261105T204730Z/WINDOWS-REGISTRATION-DELIVERY.md：原生Windows fixture真实文件/ACL/保留原keys/撤销2pass27expect，组/账户模拟且未真实配权，明确二次revokeAdministrator同意才撤本operation尝试范围，缺同意partial。首失败与修复独立保留；当前用户effectiveadminfalse，无UAC/提权。
+
+- **E22**：主控 tmux-abrupt-20261105T2105* 对应 ABRUPT-SSH-TMUX-REPORT.json / actual-abrupt-ssh-tmux-first.raw.log：实际SSH客户端SIGKILL退出null、新严格SSH附着exit0，workerPID6836相同，不重复启动；owned会话清理exit0且worker不存在。不是主机重启或全网络故障演练。
+- **E23**：owned-service-switch-20261105T210140Z/OWNED-SERVICE-VERSION-SWITCH.md：只本轮owned158 PID5390静默后备份自造DB/config/source引用，停止并以e4d同config/DB起新PID6718/44481，7表全行相等。主控实际旧路径unreachable→新严格forward恢复读170bytes/同SHA，无write重放；一个client配置发现两当前host资源/目录/文件通过。旧5b服务未触。
+
+- **E24**：full-fixture-recovery-20261105T210440Z/COMPLETE-FIXTURE-RECOVERY.md：自造配置路径重写非byte相同、7表/API逻辑全等、原pending2→0、journal不变、callback0，两个独立service进程6988/7007正常退出。首外部copy目标已存在失败单独保留；非生产迁移/崩溃演练。
+- **E25**：编译后 Windows helper fixture 实际apply/ownedrevoke exit0（compiled-helper-actual-direct-argv），完整compiledCLI hosts exit0；embedded-helpers-final-full Windows208pass/type0。helper源码资产内嵌后自有临时materialize，不把构建成功当外部helper执行通过；Linux编译效果另验。
 
 ## 推送后复核结论
 

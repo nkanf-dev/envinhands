@@ -1,4 +1,6 @@
-import { fileURLToPath } from "node:url";
+import helperSource from "./windows-helper.ps1" with {type:"text"};
+import {materializeRegistrationHelper} from "./helper-asset.ts";
+
 import { isAbsolute } from "node:path";
 import { prepareLinuxRegistration } from "./linux.ts";
 
@@ -23,6 +25,7 @@ export interface WindowsRegistrationResult {
 export async function runWindowsRegistration(request:WindowsRegistrationRequest,options:WindowsRegistrationOptions={}):Promise<WindowsRegistrationResult>{
  const fixture=options.fixtureRoot!==undefined;
  let child:Bun.Subprocess<"pipe","pipe","pipe">|undefined,timer:ReturnType<typeof setTimeout>|undefined;
+ let helper: Awaited<ReturnType<typeof materializeRegistrationHelper>> | undefined;
  try{
   if(process.platform!=="win32"||!request||request.confirm!==true||!["apply","revoke"].includes(request.action)||
    !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(request.operationId)||/[\r\n]/.test(request.operationId))throw new Error();
@@ -39,7 +42,8 @@ export async function runWindowsRegistration(request:WindowsRegistrationRequest,
    (!fixture&&options.fixtureIdentity!==undefined))throw new Error();
   const payload=JSON.stringify({request,options:{fixtureRoot:options.fixtureRoot,fixtureIdentity:options.fixtureIdentity}});
   if(Buffer.byteLength(payload)>16384)throw new Error();
-  child=Bun.spawn([options.powershellPath??"powershell.exe","-NoProfile","-NonInteractive","-File",fileURLToPath(new URL("./windows-helper.ps1",import.meta.url))],
+  helper=await materializeRegistrationHelper("windows-helper.ps1",helperSource);
+  child=Bun.spawn([options.powershellPath??"powershell.exe","-NoProfile","-NonInteractive","-File",helper.path],
    {stdin:"pipe",stdout:"pipe",stderr:"pipe"});
   child.stdin.write(payload);child.stdin.end();
   const expired=new Promise<never>((_,reject)=>{timer=setTimeout(()=>{child?.kill();reject(new Error("timeout"));},timeout);});
@@ -50,5 +54,5 @@ export async function runWindowsRegistration(request:WindowsRegistrationRequest,
    (["applied","revoked"].includes(result.status)&&code!==0))throw new Error();
   return result;
  }catch{return {status:child?"partial":"failed",ready:false,fixture,message:"Windows registration unavailable or outcome unknown; inspect the owned receipt before retry."};}
- finally{if(timer)clearTimeout(timer);if(child&&child.exitCode===null){child.kill();await child.exited;}}
+ finally{if(timer)clearTimeout(timer);if(child&&child.exitCode===null){child.kill();await child.exited;}await helper?.close();}
 }

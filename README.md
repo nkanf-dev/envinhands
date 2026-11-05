@@ -91,15 +91,15 @@ EnvInHands 自身提供不可变 Agent 注册和追加式修改记录，支持�
 
 ## 不同主机的工作共享
 
-同一产品可在每个资源主机配置明确共享目录，使用 `files read/write` 或正常 Prime 的共享文件工具互读、按预期哈希修改并读回。Windows 与 Debian VM 上的不同工作内容已实际双向修改，双方本地独立读盘和 Agent/session 署名/hash 记录一致；真实 Prime SDK 工具也实际修改 VM 文件。范围为所选 root 的 UTF-8 单文件≤64KiB，不是任意全盘同步或异地网络已验收。见 [双向工作里程碑](docs/milestone-2026-11-05-shared-work.md)、[共享文件](docs/shared-files.md) 和 [正式服务部署](docs/service-deployment.md)。
+同一产品可在每个资源主机配置明确共享目录，使用 `files hosts/resources/list/read/write` 或正常 Prime 的共享文件工具发现、互读、按预期哈希修改并读回。Windows 与 Debian VM 上的不同工作内容已实际双向修改，双方本地独立读盘和 Agent/session 署名/hash 记录一致；真实 Windows Prime SDK 工具也实际修改 VM 文件，Debian 上真正的完整 Prime CLI/Agent 工具循环也实际修改并读回 Windows 工作文件。一个 Prime session 可按受控 hostId 选择两台主机，不必手改 endpoint。范围为所选 root 的 UTF-8 单文件≤64KiB，不是任意全盘同步或异地网络已验收。见 [双向工作里程碑](docs/milestone-2026-11-05-shared-work.md)、[共享文件](docs/shared-files.md) 和 [正式服务部署](docs/service-deployment.md)。
 
 ## 当前状态
 
-当前功能代码版本 `a3c0e42` 的 Windows Bun 测试为 **181 通过**，类型检查通过。精确 123 文件源码包在 Debian VM 隔离验收为 **180 通过、1 跳过、0 失败**，类型检查通过；唯一跳过为缺少外部 Prime checkout 的可选直接导入测试。
+最新功能提交 `e4ddb77` 已推送并核对远端完整 SHA：Windows **207 通过**、类型检查通过；精确171文件源码包在 Debian VM 为 **206 通过、1 跳过、0 失败**，类型检查通过。唯一跳过为缺少外部 Prime checkout 的可选直接导入测试。历史版本统计保留在各阶段报告，不代表当前功能范围。
 
 Windows→VM 已实测严格 SSH、编译 proxy→relay/node→真实 sshd、新连接探测/候选回退、正式 `access` 加密入口以及 Unix tmux 正常 detach/reconnect 保留同一进程。统一 `device register` 登记本地观察，`device inventory` 包含显式待验证/失败记录；Windows 与 Linux 已真实登记到控制主机，但仍是 pending，不是管理员 ready。新版源码通过不表示运行中旧服务已升级。
 
-自动配置公钥与 sudo/管理员权限尚未完成；每个指定 Agent 的实际管理员授权、真实 Mac、完整六设备和异地网络入口仍未完成。Windows 管理员检查有代码和 mock，但尚未在真实 Windows SSH 管理员会话验收。UU/rathole 只有进程适配，不声称真实后端已接通。
+Unix 与 Windows 已有 owner-confirmed 本地 apply/owned revoke 实现，并通过隔离文件效果测试；真实系统公钥、sudoers 和组权限尚未应用。每个指定 Agent 的实际管理员授权、真实 Mac、完整六设备和异地网络入口仍未完成。Windows 管理员检查有代码和 mock，但尚未在真实 Windows SSH 管理员会话验收。UU/rathole 只有进程适配，不声称真实后端已接通。
 
 `src/server.ts` 提供的机器、资源留言和 Agent bus API 使用共享 bearer token，但没有内置 TLS；持有 token 的任何人均可冒充 Agent、访问队列和修改目录。独立的 `src/control.ts` 内存原型没有认证或 TLS，不是该 SQLite 服务。实验性中继仅使用共享 secret，存在明确的流控与关闭语义限制。**不要将原型直接暴露公网，也不要以此作为生产连接通道。** Agent 管理员就绪要求见 [架构草案](docs/architecture.md)，连接方案及其状态见 [候选清单](docs/transports.md)。
 

@@ -27,9 +27,7 @@ test("Windows fixture writes real keys with private ACL receipt and owned revoke
   expect(applied.receipt?.beforeAcl).toBe(applied.receipt?.afterAcl);expect(await readFile(path,"utf8")).toStartWith(original);
   expect((await runWindowsRegistration({action:"revoke",operationId:request.operationId,confirm:true},options)).status).toBe("revoked");
   expect(await readFile(path,"utf8")).toBe(original);
-  const reused=await runWindowsRegistration({...request,operationId:"existing-key",publicKey:original.split(" prior-key")[0]!},options);
-  expect(reused.status).toBe("applied");expect(reused.receipt?.keyAdded).toBe(false);
-  expect((await runWindowsRegistration({action:"revoke",operationId:"existing-key",confirm:true},options)).status).toBe("revoked");expect(await readFile(path,"utf8")).toBe(original);
+
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -48,5 +46,17 @@ test("Windows fixture admin-path grant is explicit, changed keys and ambiguous g
   expect(revoked.status).toBe("partial");expect(await readFile(path,"utf8")).toBe(modified);
   const explicit=await runWindowsRegistration({action:"revoke",operationId:request.operationId,confirm:true,revokeAdministrator:true},options);
   expect(explicit.status).toBe("partial");expect(explicit.receipt?.groupRevoked).toBe(true);expect(await readFile(path,"utf8")).toBe(modified);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("Windows fixture preserves a pre-existing authorized key through independent apply/revoke",async()=>{
+ const root=await mkdtemp(join(tmpdir(),"env-windows-existing-"));
+ const request={action:"apply" as const,operationId:"existing-key",user:"fixture-user",publicKey:key(),confirm:true as const};
+ try{
+  await privateRoot(root);const options={fixtureRoot:root,fixtureIdentity:{accountName:request.user,administrator:false}};
+  if(process.platform!=="win32"){expect((await runWindowsRegistration(request,options)).status).toBe("failed");return;}
+  const ssh=join(root,"profile",".ssh");await mkdir(ssh,{recursive:true});const path=join(ssh,"authorized_keys"),original=request.publicKey+" prior-key\r\n";await writeFile(path,original);
+  const reused=await runWindowsRegistration(request,options);expect(reused.status).toBe("applied");expect(reused.receipt?.keyAdded).toBe(false);
+  expect((await runWindowsRegistration({action:"revoke",operationId:request.operationId,confirm:true},options)).status).toBe("revoked");expect(await readFile(path,"utf8")).toBe(original);
  }finally{await rm(root,{recursive:true,force:true});}
 });

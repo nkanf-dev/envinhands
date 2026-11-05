@@ -10,11 +10,11 @@ export function response(status: number, body: unknown, headers?: Record<string,
 export function fields(data: Record<string, unknown>, allowed: string[]): void {
   if (Object.keys(data).some((k) => !allowed.includes(k))) throw new HttpError(400, "Unexpected field");
 }
-export async function bodyBytes(req: Request): Promise<Uint8Array> {
+export async function bodyBytes(req: {headers: {get(name: string): string | null}; body: ReadableStream<Uint8Array> | null}, maxBytes = MAX_BODY): Promise<Uint8Array> {
   const declared = req.headers.get("content-length");
   if (declared !== null) {
     if (!/^\d+$/.test(declared)) throw new HttpError(400, "Invalid Content-Length");
-    if (Number(declared) > MAX_BODY) throw new HttpError(413, "Request body too large");
+    if (Number(declared) > maxBytes) throw new HttpError(413, "Request body too large");
   }
   if (!req.body) return new Uint8Array();
   const reader = req.body.getReader();
@@ -25,7 +25,7 @@ export async function bodyBytes(req: Request): Promise<Uint8Array> {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > MAX_BODY) {
+      if (size > maxBytes) {
         void reader.cancel().catch(() => {});
         throw new HttpError(413, "Request body too large");
       }

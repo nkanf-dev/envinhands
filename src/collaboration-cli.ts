@@ -1,3 +1,4 @@
+import {signedCliFetch} from "./cli-registration.ts";
 import { CollaborationClient } from "./collaboration-client.ts";
 import type { ChangeCliIO } from "./change-cli.ts";
 
@@ -9,7 +10,7 @@ export async function runCollaborationCli(args: string[], env: NodeJS.ProcessEnv
     if (!token || !baseUrl) throw new Error();
     const url = new URL(baseUrl);
     if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error();
-    const client = new CollaborationClient({ baseUrl, token, fetch: io.fetch });
+    const client = new CollaborationClient({ baseUrl, token, fetch: ["heartbeat", "send", "ack", "add-note"].includes(args[0]) ? signedCliFetch(env, io.fetch) : io.fetch });
     const command = args[0];
     let value: Record<string, unknown> = {};
     if (!["agents", "machines"].includes(command)) {

@@ -81,3 +81,30 @@ test("same-host relative edits identify their actual workdirs without storing ed
     assert.ok(records.every(item => hashes.includes(item.change.evidenceRef))); assert.equal(JSON.stringify(records).includes("private-after"), false);
   } finally { await rm(dir, { recursive: true, force: true }); for (const key of keys) { if (prior[key] === undefined) delete process.env[key]; else process.env[key] = prior[key]; } }
 });
+
+test("known local edits record actual file hashes even when a tool reports an error", async () => {
+  const prior = Object.fromEntries(keys.map(key => [key, process.env[key]])); const dir = await mkdtemp(join(tmpdir(), "env-edit-file-hashes-"));
+  try {
+    Object.assign(process.env, { ENVINHANDS_AGENT_ID: "observer", ENVINHANDS_MACHINE_ID: "local-host", ENVINHANDS_AUDIT_SIGNATURE: "Observer", ENVINHANDS_CHANGE_SPOOL: join(dir, "spool") });
+    delete process.env.ENVINHANDS_URL; delete process.env.ENVINHANDS_TOKEN;
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+    for (const [name, isError, exists] of [["success", false, true], ["partial-error", true, true], ["missing", true, false]] as const) {
+      const host = fixture(dir), path = join(dir, name); if (exists) await writeFile(path, "private original");
+      const call = { type: "tool_call", toolCallId: name, toolName: "edit", input: { path: name, oldText: "private original", newText: "private modified" } };
+      assert.equal(await host.emit("tool_call", call), undefined);
+      const read = async () => await Promise.all((await readdir(join(dir, "spool"))).map(async file => JSON.parse(await readFile(join(dir, "spool", file), "utf8"))));
+      const intent = (await read()).find(item => item.change.resourceId === path); assert.equal(intent.change.beforeSha256, exists ? hash("private original") : null);
+      if (exists) await writeFile(path, "private modified");
+      await host.emit("tool_result", { ...call, type: "tool_result", content: [{ type: "text", text: "private output" }], isError });
+      const records = await read(), completed = records.find(item => item.afterRequestId === intent.change.requestId);
+      assert.equal(completed.change.beforeSha256, intent.change.beforeSha256); assert.equal(completed.change.afterSha256, exists ? hash("private modified") : null);
+      assert.equal(completed.change.outcome, isError ? "failed" : "success"); assert.equal(completed.change.targetMachineId, "local-host");
+      assert.equal(completed.change.evidenceRef, "input-sha256:" + hash(JSON.stringify(call.input))); assert.equal(JSON.stringify(records).includes("private modified"), false);
+    }
+    const directory = join(dir, "nonregular"); await mkdir(directory); const host = fixture(dir);
+    const call = { type: "tool_call", toolCallId: "directory", toolName: "edit", input: { path: "nonregular" } };
+    await host.emit("tool_call", call); await host.emit("tool_result", { ...call, type: "tool_result", content: [], isError: true });
+    const records = await Promise.all((await readdir(join(dir, "spool"))).map(async file => JSON.parse(await readFile(join(dir, "spool", file), "utf8"))));
+    assert.ok(records.filter(item => item.change.resourceId === directory).every(item => item.change.beforeSha256 === null && item.change.afterSha256 === null));
+  } finally { await rm(dir, { recursive: true, force: true }); for (const key of keys) { if (prior[key] === undefined) delete process.env[key]; else process.env[key] = prior[key]; } }
+});

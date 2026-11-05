@@ -1,5 +1,6 @@
 /** Prime tool observations, not filesystem monitoring or remote-mutation inference. */
 import { createHash } from "node:crypto";
+import { open, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { ChangeSpool } from "../change-spool.ts";
 import { ChangeClient } from "../change-client.ts";
@@ -20,6 +21,18 @@ interface API {
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const skipped = new Set(["envinhands_register_agent", "envinhands_record_change", "envinhands_list_changes", "envinhands_execute"]);
 const scope = "tool-execution-observation";
+async function localFileHash(path: string): Promise<string | null> {
+  try {
+    if (!(await stat(path)).isFile()) return null;
+    const file = await open(path, "r");
+    try {
+      if (!(await file.stat()).isFile()) return null;
+      const hash = createHash("sha256");
+      for await (const chunk of file.createReadStream({ autoClose: false })) hash.update(chunk);
+      return hash.digest("hex");
+    } finally { await file.close(); }
+  } catch { return null; }
+}
 export default function attribution(pi: API): void {
   const { ENVINHANDS_AGENT_ID: agentId, ENVINHANDS_MACHINE_ID: machineId, ENVINHANDS_AUDIT_SIGNATURE: signature,
     ENVINHANDS_CHANGE_SPOOL: directory, ENVINHANDS_URL: baseUrl, ENVINHANDS_TOKEN: token } = process.env;
@@ -30,7 +43,7 @@ export default function attribution(pi: API): void {
   const safe = (value: string) => !/[\x00-\x1f\x7f]/.test(value) && !secrets.some(secret => value.includes(secret));
   if (![agentId, machineId, signature].every(safe)) throw new Error("Attribution identity contains an invalid value.");
   const spool = new ChangeSpool(directory);
-  const pending = new Map<string, { registration: AgentRegistrationInput; intent: ChangeInput }>();
+  const pending = new Map<string, { registration: AgentRegistrationInput; intent: ChangeInput; editPath?: string }>();
   let dirty = true; // A new runtime also drains any previously persisted observations.
   const key = (event: Call | Result, ctx: Context) => digest(JSON.stringify([ctx.sessionManager.getSessionId(), event.toolCallId]));
   const status = (ctx: Context, message: string) => ctx.ui.setStatus("envinhands-attribution", message);
@@ -43,14 +56,15 @@ export default function attribution(pi: API): void {
       const callKey = key(event, ctx);
       const path = event.toolName === "edit" && typeof event.input.path === "string" ? event.input.path : undefined;
       const resourcePath = path && path.trim() && safe(path) ? resolve(ctx.cwd, path) : undefined;
-      const resourceId = resourcePath && resourcePath.length <= 2048 && safe(resourcePath) ? resourcePath : "tool-call:" + callKey;
+      const editPath = resourcePath && resourcePath.length <= 2048 && safe(resourcePath) ? resourcePath : undefined;
+      const resourceId = editPath ?? "tool-call:" + callKey;
       const tool = ["edit", "bash", "ipython"].includes(event.toolName) ? event.toolName : "custom";
       const intent = parseChange({ requestId: "intent-" + callKey, operationId: "tool-" + callKey, registrationId: registration.registrationId,
         targetMachineId: machineId, resourceId, action: scope, summary: `${tool} invocation observed; result pending`, reason: scope,
         authority: "Observation of host-dispatched tool; not an additional execution grant", outcome: "unknown", occurredAt: new Date().toISOString(),
-        beforeSha256: null, afterSha256: null, evidenceRef: "input-sha256:" + digest(JSON.stringify(event.input)) });
+        beforeSha256: editPath ? await localFileHash(editPath) : null, afterSha256: null, evidenceRef: "input-sha256:" + digest(JSON.stringify(event.input)) });
       await spool.enqueue(registration, intent);
-      pending.set(callKey, { registration, intent }); dirty = true;
+      pending.set(callKey, { registration, intent, editPath }); dirty = true;
       status(ctx, "Tool observation durable locally; service synchronization pending");
     } catch {
       ctx.ui.notify("EnvInHands could not persist tool intent; execution blocked.", "error");
@@ -63,6 +77,7 @@ export default function attribution(pi: API): void {
     if (!observed) return;
     try {
       const completed = parseChange({ ...observed.intent, requestId: "result-" + callKey, occurredAt: new Date().toISOString(),
+        afterSha256: observed.editPath ? await localFileHash(observed.editPath) : null,
         outcome: event.isError ? "failed" : "success", summary: event.isError ? "Tool returned an error; side effects not inferred" : "Tool returned without an error; side effects not inferred" });
       await spool.enqueue(observed.registration, completed, observed.intent.requestId);
       pending.delete(callKey); dirty = true;

@@ -89,6 +89,10 @@ EnvInHands 自身提供不可变 Agent 注册和追加式修改记录，支持�
 
 `src/transports/ssh-routes.ts` 将既有策略接到真实严格 SSH 探测，在有限总预算内按优先级尝试候选，保持同一受信主机别名。`src/remote-execution.ts` 在受控入口执行前持久记录 intent，执行后追加结果；一旦命令开始，不因失败或超时自动换路重跑。`exec` CLI 只执行用户授权的命令，远程输出是不可信数据，不是新授权；它不自动配权或保证远端任务断线后完成。
 
+## 不同主机的工作共享
+
+同一产品可在每个资源主机配置明确共享目录，使用 `files read/write` 或正常 Prime 的共享文件工具互读、按预期哈希修改并读回。Windows 与 Debian VM 上的不同工作内容已实际双向修改，双方本地独立读盘和 Agent/session 署名/hash 记录一致；真实 Prime SDK 工具也实际修改 VM 文件。范围为所选 root 的 UTF-8 单文件≤64KiB，不是任意全盘同步或异地网络已验收。见 [双向工作里程碑](docs/milestone-2026-11-05-shared-work.md)、[共享文件](docs/shared-files.md) 和 [正式服务部署](docs/service-deployment.md)。
+
 ## 当前状态
 
 当前功能代码版本 `a3c0e42` 的 Windows Bun 测试为 **181 通过**，类型检查通过。精确 123 文件源码包在 Debian VM 隔离验收为 **180 通过、1 跳过、0 失败**，类型检查通过；唯一跳过为缺少外部 Prime checkout 的可选直接导入测试。

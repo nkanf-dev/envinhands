@@ -23,7 +23,7 @@ const secureConfig=process.env.ENVINHANDS_VALIDATION_CONFIG?JSON.parse(readFileS
 const external=secureConfig?.url??process.env.ENVINHANDS_URL;
 const suppliedToken=secureConfig?.token??process.env.ENVINHANDS_TOKEN;
 if(external&&!suppliedToken)throw new Error("An external service needs a securely injected token.");
-const server=external?undefined:startAgentBusServer({dbPath:join(root,"bus.sqlite"),token:localToken,hostname:"127.0.0.1",port:0});
+const server=external?undefined:startAgentBusServer({dbPath:join(root,"bus.sqlite"),token:localToken,hostname:"127.0.0.1",port:0,requireSignedMutations:true});
 const url=external??server!.url,token=suppliedToken??localToken;
 const reportPath=process.env.PRIME_CLI_REPORT?resolve(process.env.PRIME_CLI_REPORT):undefined;
 const secretValues=[token,process.env.ENVINHANDS_ACCEPTANCE_API_KEY].filter((value):value is string=>!!value);
@@ -55,7 +55,8 @@ class RealCLI {
   const args=[join(resolve(checkout!),"node_modules/tsx/dist/cli.mjs"),join(resolve(checkout!),"packages/coding-agent/src/cli.ts"),"--mode","rpc","--offline","--daemon-socket",socket,"--session-dir",sessionDir,
    "--provider",realMode?"envinhands-acceptance":"envinhands-validation","--model",realMode?"gpt-6.1-terra":"scripted","--no-skills","--no-context-files","--no-builtin-tools",
    ...(!realMode?["--extension",fileURLToPath(new URL("./prime-validation-provider.ts",import.meta.url))]:[]),
-   ...["heartbeat","messages","resources"].flatMap(name=>["--extension",join(resolve(checkout!),`packages/coding-agent/examples/extensions/envinhands-${name}.ts`)]),
+   "--extension",fileURLToPath(new URL("../src/integrations/prime-transport.ts",import.meta.url)),
+   "--extension",fileURLToPath(new URL("../src/integrations/prime-collaboration.ts",import.meta.url)),
    "--extension",fileURLToPath(new URL("../src/integrations/prime.ts",import.meta.url)),
    "--extension",fileURLToPath(new URL("../src/integrations/prime-execution.ts",import.meta.url)),
    "--extension",fileURLToPath(new URL("../src/integrations/prime-files.ts",import.meta.url)),

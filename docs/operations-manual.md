@@ -423,3 +423,18 @@ try {
 在 EnvInHands 工作目录使用全新空 Prime agentDir，正常 `SettingsManager.create` / `DefaultResourceLoader.reload` / `getSkills` 自动发现 `envinhands-resources` 与 `envinhands-agent-messaging`，位置为 `.prime/agent/skills/<name>/SKILL.md`。没有指定 skillPaths、复制 skill 或借用用户旧配置；两份完整正文可读取，诊断为空，文件前后 SHA256 未变。实际入口为 Prime 0.9.8+fork.4 源码、Node 24 与 tsx，exit 0，无网络或模型调用。
 
 这说明在该工作目录可正常发现项目操作说明，不等于模型已遵循说明，也不是自动运行服务或授予权限。正文中的历史示例仍须按当前 CLI、实际配置与本手册核对。报告与可复现入口见交接证据 `prime-agent-resume-20261105T173812935010Z/skill-discovery-verification/`；不需要为此修改 Prime 或 skill 源文件。
+
+## 16. 两台主机的不同工作内容共享
+
+每台资源主机可运行同一正式 `service`，在私有配置中给出自身 `machineId` 与明确 `sharedRoots`。例如 Windows 只共享验收工作目录，Debian 只共享另一份动态工作目录。客户端通过获准 HTTPS 或严格 SSH 加密 loopback 入口访问所选主机，不共享整个 home/Secrets，不自动授予 SSH 或管理员权限。
+
+```text
+<env-command> files read
+<env-command> files write
+```
+
+read 的 stdin 是 `{resourceId,path}`；write 再提供 UTF-8 `text` 与此前 read 返回的 `expectedSha256`。null 仅用于创建不存在的文件，现有文件必须哈希匹配；冲突应读回并协调，未知回复不能盲重写。当前限定单个 UTF-8 文件 64KiB、JSON envelope 68KiB，无二进制/整个目录同步承诺。正常 Prime profile 提供 `envinhands_read_shared_file` / `envinhands_write_shared_file`，使用真实执行 session 署名，不靠任意 shell 拼命令。
+
+目标服务记录执行前 intent、执行后结果、实际 target machine/resourceId/path 和前后 hash；正文不复制入审计。对方再读与资源主机本地独立读盘核对，才能报告修改完成。所选共享目录内仍按可信协作模型工作：不是 OS 沙箱、资源锁或对抗任意外部写者的原子 CAS。跨机通路断开后，先核对文件/原 operation，再决定是否重试。
+
+双向 Windows↔Debian 正常验收必须分别记录：Windows 对 Debian 文件 read→compare-write→readback，以及 Debian 对 Windows 不同文件执行相同行为；仅发消息、单向执行命令或共享只读静态源不替代本项。当前具体回执以本阶段交接证据为准，不能在两方向结束前提前写为通过。

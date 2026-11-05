@@ -1,5 +1,9 @@
 #!/usr/bin/env bun
 /** Explicit CLI entry point. Importing this module never starts a listener. */
+import { runFilesCli } from "./files-cli.ts";
+import { runProvisionCli } from "./provision-cli.ts";
+import { signedCliFetch } from "./cli-registration.ts";
+import { runServiceCli } from "./service-cli.ts";
 import { runPrimeProfileCli } from "./prime-profile-cli.ts";
 import { runRemoteAccessCli } from "./remote-access-cli.ts";
 import { runDeviceCli } from "./device-cli.ts";
@@ -15,8 +19,14 @@ import { buildTmuxRelayArgv } from "./session/tmux-relay.ts";
 import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
 
-const help = `Usage: bun src/cli.ts <prime-profile ENV_ROOT PRIME_ROOT|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: bun src/cli.ts <files read|files write|provision|service CONFIG_JSON|prime-profile ENV_ROOT PRIME_ROOT|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
+files: read/write selected work roots; JSON resourceId/path, write also text and
+       expectedSha256 (null only creates missing file); signed writes, no blind overwrite.
+provision: explicit local owner-confirmed Unix key/admin apply or revoke JSON stdin;
+           requires existing administrator context, identity env and durable spool.
+service: starts persistent control service from private absolute JSON config;
+         signed mutations required, config/DB preserved on SIGINT/SIGTERM.
 prime-profile: emits normal opt-in Prime settings with collaboration, audit, execution,
                read-only files and explicit project skills; no credential or config writes.
 access: encrypted SSH forwarding to configured loopback control service;
@@ -210,6 +220,7 @@ async function register(args: string[], env: NodeJS.ProcessEnv, deps: CliDepende
   const data = registerArgs(args);
   const origin = apiUrl(env, text => deps.stderr.write(text + "\n"));
   const token = required(env, "ENVINHANDS_TOKEN");
+  const signedFetch = signedCliFetch(env, deps.fetch);
   if (/\s|[\x00-\x1f\x7f]/.test(token)) throw new UsageError("Invalid ENVINHANDS_TOKEN.");
   const request = async (path: string, body?: string): Promise<{ status: number; data: unknown }> => {
     const controller = new AbortController();
@@ -217,7 +228,7 @@ async function register(args: string[], env: NodeJS.ProcessEnv, deps: CliDepende
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Timeout")); }, deps.requestTimeoutMs); });
     try {
       return await Promise.race([(async () => {
-        const response = await deps.fetch(origin + path, { method: "POST", redirect: "error", signal: controller.signal,
+        const response = await signedFetch(origin + path, { method: "POST", redirect: "error", signal: controller.signal,
           headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, body });
         if (response.status === 409) { void response.body?.cancel().catch(() => {}); return { status: 409, data: null }; }
         if (!response.ok) { void response.body?.cancel().catch(() => {}); return { status: response.status, data: null }; }
@@ -243,9 +254,10 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
   const deps = { ...defaults, ...overrides };
   const error = (text: string) => deps.stderr.write(text + "\n");
   const [command, id] = args;
+  if (command === "service") return runServiceCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
   if (command === "prime-profile") return runPrimeProfileCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)});
   if (command === "access") return runRemoteAccessCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
-  if (command === "change" || command === "exec" || command === "verify-access" || command === "collaborate" || command === "device") {
+  if (command === "change" || command === "exec" || command === "verify-access" || command === "collaborate" || command === "device" || command === "provision" || command === "files") {
     const io = {
       fetch: deps.fetch,
       write: (text: string) => deps.stdout.write(text),
@@ -256,13 +268,13 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
         for await (const chunk of process.stdin) {
           const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           size += bytes.byteLength;
-          if (size > 16384) throw new Error("Input too large");
+          if (size > (command === "files" ? 68 * 1024 : 16384)) throw new Error("Input too large");
           chunks.push(bytes);
         }
         return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
       },
     };
-    return command === "device" ? runDeviceCli(args.slice(1), env, io) : command === "collaborate" ? runCollaborationCli(args.slice(1), env, io) : command === "change" ? runChangeCli(args.slice(1), env, io) : command === "verify-access" ? runAccessCli(args.slice(1), env, io) : runRemoteCli(args.slice(1), env, io);
+    return command === "files" ? runFilesCli(args.slice(1), env, io) : command === "provision" ? runProvisionCli(args.slice(1), env, io) : command === "device" ? runDeviceCli(args.slice(1), env, io) : command === "collaborate" ? runCollaborationCli(args.slice(1), env, io) : command === "change" ? runChangeCli(args.slice(1), env, io) : command === "verify-access" ? runAccessCli(args.slice(1), env, io) : runRemoteCli(args.slice(1), env, io);
   }
   if (command === "tmux") {
     try {

@@ -1,3 +1,4 @@
+import {signedCliFetch} from "./cli-registration.ts";
 import { DeviceRegistrationClient, type DeviceRegistrationOptions } from "./device-registration.ts";
 import { BridgeError } from "./prime-bridge.ts";
 import type { ChangeCliIO } from "./change-cli.ts";
@@ -10,7 +11,7 @@ export async function runDeviceCli(args: string[], env: NodeJS.ProcessEnv, io: C
     if (!baseUrl || !token) throw new Error();
     const url = new URL(baseUrl);
     if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error();
-    const client = new DeviceRegistrationClient({ baseUrl, token, fetch: io.fetch });
+    const client = new DeviceRegistrationClient({ baseUrl, token, fetch: args[0] === "register" ? signedCliFetch(env, io.fetch) : io.fetch });
     if (args[0] === "inventory") {
       const response = await io.fetch(new URL("/v1/machines?includePending=true&includeNotReady=true", baseUrl), { headers: { authorization: `Bearer ${token}` }, redirect: "error" });
       if (!response.ok) throw new Error();

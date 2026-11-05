@@ -4,20 +4,21 @@
 start a model, create an Agent registration, install dependencies or grant access.
 
 ```text
-<absolute-bun> src/cli.ts prime-profile <absolute-EnvInHands-root> <absolute-prepared-Prime-root>
+<absolute-bun> src/cli.ts prime-profile <absolute-EnvInHands-root> [absolute-prepared-Prime-root]
 ```
 
 Merge the resulting `extensions` and `skills` lists into a **private per-client**
 Prime `settings.json`, preserving other approved configuration. Do not blindly
-replace existing settings. The source-checkout profile includes the three Prime
-heartbeat/messages/resources extensions, Env explicit records, execution,
-read-only files and automatic tool-event observation, plus explicit absolute
+replace existing settings. The profile includes the session-bound signed HTTP transport first, the Env-owned
+prime-collaboration extension (heartbeat/messages/resources), Env explicit records, execution,
+local read-only files, shared-host read/compare-write files and automatic tool-event observation, plus explicit absolute
 paths to the two Env project skills. Thus a client can work in its own unrelated
 workdir without losing the project skills or relying on CTF-only setup.
 
-Use a prepared Prime 0.9.8 checkout with its locked Node dependencies and the
-source-loader fix. This is not a profile for an arbitrary bundled version whose
-source layout differs. There is no new Env package dependency. Start Prime via
+Use a prepared Prime 0.9.8 runtime with its locked Node dependencies and the
+source-loader fix. All business extension paths now point into EnvInHands; the
+optional second root argument is accepted for earlier command compatibility but
+no longer locates Prime example extensions. There is no new Env package dependency. Start Prime via
 its normal installed/source CLI; do not pass `--no-skills` or `--no-extensions`
 if those configured resources are required.
 
@@ -43,9 +44,9 @@ their own registered signed records. A profile is not a global audit monitor.
 
 A fresh empty agentDir with this emitted profile and an unrelated workdir was
 loaded by real Prime `SettingsManager.create` / `DefaultResourceLoader.reload`.
-Seven extensions loaded without errors; tool_call/tool_result/agent_end and
+The final seven-extension Env-owned profile loaded without errors; tool_call/tool_result/agent_end and
 session_shutdown observation handlers were present; collaboration, audit,
-execution and read-only-file tools registered. Both original skill bodies were
+execution, local read-only and shared-host read/write tools registered. Both original skill bodies were
 readable from their explicit Env paths. Network requests and model calls were
 zero; only owned fixture settings/files were created and cleaned up.
 
@@ -56,3 +57,21 @@ prior real-model ring/CTF used restricted validation configuration with
 `--no-skills`; their success does not prove models used these skills. The CLI
 acceptance recipe now also loads observation outside CTF; prior E1 relied on
 explicit records and must not be rewritten as historical automatic coverage.
+
+## Shared work on another host
+
+A host service can expose explicit `sharedRoots`, never an entire home by default.
+Normal tools `envinhands_read_shared_file` and `envinhands_write_shared_file` use
+that configured service's resource ID and relative file path. Read returns text
+and SHA256. Write requires that expected SHA256; null only creates a missing
+file. A stale hash yields a conflict, not an overwrite. See [shared-files.md](shared-files.md)
+and [api-mutation-attribution.md](api-mutation-attribution.md).
+
+A client needs a real encrypted route to that host service. Existing strict SSH
+local/reverse forwarding can supply loopback URLs; it does not make an unreachable
+site appear automatically. Each write uses the executing actual Prime session's
+explicit identity even if another session reloaded a process-level transport.
+Known local edit observations now also carry readable before/after file hashes;
+unknown tools do not pretend to identify all side effects.
+
+The Env-owned collaboration adapter uses actual lifecycle context for each heartbeat and tool. It does not currently start a 30-second timer; lifecycle observations are not continuous liveness. Previous seven/nine-path profile reports remain historical snapshots, not the final configuration.

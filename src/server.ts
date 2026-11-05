@@ -7,10 +7,17 @@
 import { createAgentBus } from "./agent-bus.ts";
 import { createMachineApi } from "./machine-api.ts";
 import { createChangeApi } from "./change-api.ts";
+import { createSharedFilesApi } from "./shared-files-api.ts";
+import { createAccessEvidenceApi } from "./access-evidence-api.ts";
+import { createMutationAudit } from "./mutation-audit.ts";
 
 export interface AgentBusServerOptions {
   dbPath: string;
   token: string;
+  /** Formal service defaults to requiring declared registration on non-audit writes. */
+  requireSignedMutations?: boolean;
+  machineId?: string;
+  sharedRoots?: Record<string,string>;
   /** Port 0 asks the operating system to select an available port. */
   port?: number;
   /** Address to bind. Defaults to all IPv4 interfaces. */
@@ -26,19 +33,34 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
   let changes: ReturnType<typeof createChangeApi>;
   try { changes = createChangeApi({ dbPath: options.dbPath, token: options.token }); }
   catch (error) { machines.close(); bus.close(); throw error; }
+  let accessEvidence: ReturnType<typeof createAccessEvidenceApi>;
+  try { accessEvidence = createAccessEvidenceApi({dbPath: options.dbPath, token: options.token}); }
+  catch (error) { changes.close(); machines.close(); bus.close(); throw error; }
+  let sharedFiles: ReturnType<typeof createSharedFilesApi>;
+  try { sharedFiles = createSharedFilesApi({roots: options.sharedRoots ?? {}, token: options.token}); }
+  catch (error) { accessEvidence.close(); changes.close(); machines.close(); bus.close(); throw error; }
+  let mutations: ReturnType<typeof createMutationAudit>;
+  try { mutations = createMutationAudit({dbPath: options.dbPath, token: options.token,
+    machineId: options.machineId ?? "control-host", requireSignedMutations: options.requireSignedMutations}); }
+  catch (error) { sharedFiles.close(); accessEvidence.close(); changes.close(); machines.close(); bus.close(); throw error; }
   let server: ReturnType<typeof Bun.serve>;
   try {
     server = Bun.serve({
       hostname: options.hostname ?? "0.0.0.0",
       port: options.port ?? 8787,
-      fetch: (request) => {
+      fetch: (request) => mutations.dispatch(request, (request) => {
         const path = new URL(request.url).pathname;
+        if (path === "/v1/shared-files") return sharedFiles.fetch(request);
+        if (path === "/v1/access-evidence") return accessEvidence.fetch(request);
         if (path === "/v1/changes" || path === "/v1/agent-registrations") return changes.fetch(request);
         return path === "/v1/machines" || path.startsWith("/v1/machines/") || path.startsWith("/v1/resources/")
           ? machines.fetch(request) : bus.fetch(request);
-      },
+      }),
     });
   } catch (error) {
+    mutations.close();
+    sharedFiles.close();
+    accessEvidence.close();
     changes.close();
     machines.close();
     bus.close();
@@ -58,7 +80,7 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
       if (!stopping) {
         stopping = (async () => {
           try { await server.stop(true); }
-          finally { changes.close(); machines.close(); bus.close(); }
+          finally { mutations.close(); sharedFiles.close(); accessEvidence.close(); changes.close(); machines.close(); bus.close(); }
         })();
       }
       return stopping;

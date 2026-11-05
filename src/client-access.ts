@@ -5,33 +5,37 @@ import { runCommand, type CommandRunner } from "./readiness.ts";
 import type { AgentRegistrationInput } from "./change-model.ts";
 import { parseRegistration } from "./change-model.ts";
 
-export interface ClientAccessEvidence {
-  registrationId: string;
-  agentId: string;
-  sessionId: string;
-  targetMachineId: string;
-  routeId: string;
-  sshIdentityRef: string;
-  hostKeyAlias: string;
-  os: "linux" | "macos" | "windows";
-  checkedAt: string;
-  expiresAt: string;
-  ready: boolean;
-  status: "ready" | "not-ready";
-  verificationScope: "actual-client-ssh-identity-and-route";
+export type { ClientAccessEvidence } from "./access-evidence-model.ts";
+import { publicKeyFingerprint, type ClientAccessEvidence } from "./access-evidence-model.ts";
+import { isAbsolute } from "node:path";
+import { runOwnedProcess } from "./process-runner.ts";
+
+/** Derives public output with OpenSSH; JavaScript never opens private key bytes. */
+export async function fingerprintSshIdentity(identityFile: string, timeoutMs: number): Promise<string> {
+  if (!isAbsolute(identityFile) || /[\x00-\x1f\x7f%]/.test(identityFile)) throw new Error("An explicit absolute SSH identity file is required");
+  const result = await runOwnedProcess("ssh-keygen", ["-y", "-P", "", "-f", identityFile], timeoutMs);
+  if (result.exitCode !== 0 || result.timedOut || result.outputTruncated) throw new Error("SSH public identity could not be derived");
+  const [algorithm, encoded] = result.stdout.trim().split(/\s+/);
+  const blob = Buffer.from(encoded ?? "", "base64");
+  if (!algorithm || blob.length < 4 || blob.readUInt32BE(0) > blob.length - 4 || blob.subarray(4, 4 + blob.readUInt32BE(0)).toString() !== algorithm) throw new Error("Invalid SSH public identity");
+  return "SHA256:" + createHash("sha256").update(blob).digest("base64").replace(/=+$/, "");
 }
 /** Local observation, not a server-authenticated proof or delegated access grant. */
 export async function verifyClientAccess(options: {
   registration: AgentRegistrationInput; targetMachineId: string; os: "linux" | "macos" | "windows";
   routes: SshRoute[]; access: SshAccess; priority: string[]; totalBudgetMs: number; ttlMs?: number;
-}, dependencies: { runner?: CommandRunner; now?: () => number } = {}): Promise<ClientAccessEvidence> {
+}, dependencies: { runner?: CommandRunner; now?: () => number; fingerprint?: typeof fingerprintSshIdentity } = {}): Promise<ClientAccessEvidence> {
   const registered = parseRegistration(options.registration), ttl = options.ttlMs ?? 300000;
   if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(options.targetMachineId) || /[\r\n]/.test(options.targetMachineId) ||
-      !["linux", "macos", "windows"].includes(options.os) || !Number.isSafeInteger(ttl) || ttl < 1 ||
+      !["linux", "macos", "windows"].includes(options.os) || !Number.isSafeInteger(ttl) || ttl < 1 || ttl > 300000 || !options.access.identityFile || !isAbsolute(options.access.identityFile) ||
       !Number.isSafeInteger(options.totalBudgetMs) || options.totalBudgetMs < 1) throw new Error("Invalid access verification");
   const runner = dependencies.runner ?? runCommand, now = dependencies.now ?? Date.now;
   const deadline = now() + options.totalBudgetMs;
-  const selected = await selectSshRoute(options.routes, options.access, { priority: options.priority, totalBudgetMs: options.totalBudgetMs }, { runner, now });
+  const fingerprint = dependencies.fingerprint ?? fingerprintSshIdentity;
+  const identity = publicKeyFingerprint(await fingerprint(options.access.identityFile!, Math.min(options.totalBudgetMs, 10000)));
+  const probeBudget = Math.floor(deadline - now());
+  if (probeBudget <= 0) throw new Error("Access verification budget expired before SSH probe");
+  const selected = await selectSshRoute(options.routes, options.access, { priority: options.priority, totalBudgetMs: probeBudget }, { runner, now });
   const command = options.os === "windows" ? ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", ENCODED_WINDOWS_ADMIN_CHECK] : ["sudo", "-n", "true"];
   let ready = false;
   const remaining = Math.floor(deadline - now());
@@ -39,19 +43,20 @@ export async function verifyClientAccess(options: {
     try { ready = (await runner("ssh", [...selected.argv, ...command], Math.min(remaining, 15000))).exitCode === 0; }
     catch { /* Actual identity/privilege failure is not readiness. */ }
   }
+  const afterKeyBudget = Math.floor(deadline - now());
+  if (afterKeyBudget <= 0) ready = false;
+  else { try { if (publicKeyFingerprint(await fingerprint(options.access.identityFile!, Math.min(afterKeyBudget, 10000))) !== identity) ready = false; } catch { ready = false; } }
   const checked = now();
   return { registrationId: registered.registrationId, agentId: registered.agentId, sessionId: registered.sessionId,
     targetMachineId: options.targetMachineId, routeId: selected.route.id,
-    sshIdentityRef: createHash("sha256").update(JSON.stringify({ user: options.access.user,
-      identityFile: options.access.identityFile ?? null, knownHostsFile: options.access.knownHostsFile ?? null,
-      hostKeyAlias: options.access.hostKeyAlias })).digest("hex"),
+    sshIdentityRef: identity, sshUser: options.access.user,
     hostKeyAlias: options.access.hostKeyAlias, os: options.os, checkedAt: new Date(checked).toISOString(),
     expiresAt: new Date(checked + ttl).toISOString(), ready, status: ready ? "ready" : "not-ready",
     verificationScope: "actual-client-ssh-identity-and-route" };
 }
 /** Check caller, route, identity and freshness together; heartbeat cannot renew this. */
 export function isClientAccessFresh(evidence: ClientAccessEvidence, expected: Pick<ClientAccessEvidence,
-  "registrationId" | "sessionId" | "agentId" | "targetMachineId" | "routeId" | "sshIdentityRef" | "hostKeyAlias">, now = Date.now()): boolean {
+  "registrationId" | "sessionId" | "agentId" | "targetMachineId" | "routeId" | "sshIdentityRef" | "sshUser" | "hostKeyAlias">, now = Date.now()): boolean {
   return evidence.ready === true && evidence.status === "ready" && Number.isFinite(now) &&
     Number.isFinite(Date.parse(evidence.checkedAt)) && Number.isFinite(Date.parse(evidence.expiresAt)) &&
     Date.parse(evidence.checkedAt) <= now && now < Date.parse(evidence.expiresAt) &&

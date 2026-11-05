@@ -132,7 +132,7 @@ test("unexpected runtime failure closes the runtime without leaking errors", asy
 
 describe("register CLI", () => {
   const args = ["register", "--id", "node-1", "--name", "Node One", "--host", "host.example", "--os", "linux", "--ssh-user", "admin", "--ssh-port", "2222"];
-  const env = { ENVINHANDS_URL: "https://example.org", ENVINHANDS_TOKEN: "secret-register-token" };
+  const env = { ENVINHANDS_URL: "https://example.org", ENVINHANDS_TOKEN: "secret-register-token", ENVINHANDS_AGENT_ID: "cli-test", ENVINHANDS_MACHINE_ID: "client", ENVINHANDS_SESSION_ID: "cli-session", ENVINHANDS_AUDIT_SIGNATURE: "CLI test" };
   function ctx() { let stdout = ""; const c = context(); return { ...c, stdout: { write(s: string) { stdout += s; } }, out: () => stdout }; }
   function json(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }); }
   test("creates pending then verifies and reports ready only", async () => {

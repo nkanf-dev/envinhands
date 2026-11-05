@@ -12,6 +12,8 @@ test("normal Prime profile includes observation and both skills independently of
   assert.equal(profile.skills.length, 2);
   assert.ok(profile.skills.every(path => path.startsWith(env) && path.endsWith("SKILL.md")));
   assert.equal(new Set(profile.extensions).size, 7);
+  assert.ok(profile.extensions.every(path => path.startsWith(env)));
+  assert.deepEqual(createPrimeProfile(env),profile);
   const output: string[] = [], errors: string[] = [];
   const io = {write: (text: string) => output.push(text), error: (text: string) => errors.push(text)};
   assert.equal(runPrimeProfileCli([env, prime], io), 0);

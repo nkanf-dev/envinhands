@@ -110,7 +110,9 @@ test("real loopback listener persists provenance separately from activity and me
     assert.equal((await call("/v1/agents/heartbeat", { agentId: "agent-a", machineId: "machine-a" })).status, 200);
     await server.stop(); server = startAgentBusServer({ dbPath, token, hostname: "127.0.0.1", port: 0 });
     const page = await (await call("/v1/changes")).json() as any;
-    assert.equal(page.records.length, 1); assert.equal(page.records[0].registration.signature, "Agent A");
+    assert.equal(page.records.length, 3); assert.equal(page.records[0].registration.signature, "Agent A");
+    assert.deepEqual(page.records.slice(1).map((record: {outcome: string}) => record.outcome), ["unknown", "success"]);
+    assert.ok(page.records.slice(1).every((record: {action: string; authority: string}) => record.action === "api-mutation" && record.authority.includes("original actor unknown")));
     assert.equal((await call("/v1/changes", change)).status, 200);
     assert.equal((await call("/v1/machines")).status, 200);
     assert.equal((await call("/v1/agents")).status, 200);

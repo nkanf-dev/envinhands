@@ -52,3 +52,11 @@
 ## 优化方向与完成口径
 
 稳定小核心、CLI/Prime/其他接入复用，不用多层兼容兜底。原始目标未全部完成前持续列出：逐指定Agentadmin正向、所有者批准的自动配权/撤销、真实mac和六设备、异地多故障域入口等。实际正常路径已可用直接认可，但不拿CTF拿分替代全部目标。
+
+## 在制：正式服务、逐公钥证据与双向工作共享
+
+后续用户要求继续所有可执行非硬件工作，并特别要求不同主机的不同工作内容能互读、修改和共享。本阶段新增：正式私有配置服务/稳定停止重启，统一服务 API mutation intent/outcome 与严格注册声明，直接 CLI 身份、session-bound signed transport，实际 OpenSSH 公钥指纹及持久逐 Agent access-evidence，knownedit 前后 hash，owner-confirmed Unix apply/owned revoke（真实系统未应用），明确 root 的共享 UTF-8 文件 API/client/CLI/Prime工具及 expected-hash 写入。
+
+这些使用既有依赖与共同核心，未变更 Prime 平台、旧 live bus、现有 SSH key/sudoers/firewall。Unix helper 使用 Python 标准库与实际 visudo；隔离 Linux 文件效果测试不等于真实管理员已授权。共享服务新增 access_evidence 表和普通 API audit 记录；新严格服务要求已配置注册声明，旧 direct bearer-only 客户端需升级或显式保留 legacy 非严格模式（其原 actor unknown）。schema 保留，撤回客户端/服务时不要删除记录或重放任务。
+
+此段记录实现演进，不预先承诺尚未返回的真实双向/VM完整结果。完整阶段 commit/push 与实际结果以最终回执更新，配置/DB/凭据与代码回退分开。

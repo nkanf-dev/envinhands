@@ -15,6 +15,8 @@ export interface RemoteExecution {
   timeoutMs: number;
   spool: ChangeSpool;
   signal?: AbortSignal;
+  /** Internal route selection hook, called only after the durable audit intent. */
+  selectRoute?: () => Promise<{ route: SshRoute }>;
 }
 /** Executes one authorized remote command, never retries after a command started. */
 export async function runRemoteExecution(options: RemoteExecution) {
@@ -29,11 +31,11 @@ export async function runRemoteExecution(options: RemoteExecution) {
   let output: Pick<ProcessReceipt, "stdout" | "stderr" | "outputTruncated"> = { stdout: "", stderr: "", outputTruncated: false };
   const audit = await runAuditedOperation(options.registration, options.change, options.spool, async () => {
     if (options.signal?.aborted) return { outcome: "unknown" };
-    const selected = await selectSshRoute(options.routes, options.access,
+    const selected = options.selectRoute ? await options.selectRoute() : await selectSshRoute(options.routes, options.access,
       { priority: options.priority, totalBudgetMs: options.probeBudgetMs });
     routeId = selected.route.id;
     if (options.signal?.aborted) return { outcome: "unknown" };
-    const completion = await runOwnedProcess("ssh", [...selected.argv, options.command], options.timeoutMs);
+    const completion = await runOwnedProcess("ssh", [...buildSshRouteArgv(selected.route, options.access), options.command], options.timeoutMs);
     started = completion.started;
     output = { stdout: completion.stdout, stderr: completion.stderr, outputTruncated: completion.outputTruncated };
     exitCode = completion.exitCode; timedOut = completion.timedOut;

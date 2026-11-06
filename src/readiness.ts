@@ -80,7 +80,7 @@ export async function relayProxy(nodeId: unknown): Promise<string | undefined> {
   } catch { return undefined; }
   // One POSIX shell word, including when the path contains a quote or spaces.
   const quoted = `'${binary.replace(/'/g, "'\\''")}'`;
-  return `ProxyCommand=exec ${quoted} proxy ${nodeId}`;
+  return `ProxyCommand=${quoted} proxy ${nodeId}`;
 }
 
 /**

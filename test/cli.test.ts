@@ -1,11 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync, mkdirSync, symlinkSync, utimesSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runCli, type CliDependencies } from "../src/cli.ts";
+import { runCli as actualRunCli, reapDebugLogs, debugLogWriterName, type CliDependencies } from "../src/cli.ts";
 import { startAgentBusServer } from "../src/server.ts";
 import { createRelayServer } from "../src/relay.ts";
+
+const testLogs = mkdtempSync(join(tmpdir(), "env-cli-logs-"));
+afterAll(() => rmSync(testLogs, { recursive: true, force: true }));
+function runCli(args: string[], env: NodeJS.ProcessEnv, deps: Partial<CliDependencies> = {}) {
+  return actualRunCli(args, ["server", "node", "relay"].includes(args[0] ?? "") ? { ENVINHANDS_LOG_DIR: testLogs, ...env } : env, deps);
+}
 
 function context() {
   const signals = new EventEmitter();
@@ -59,7 +65,7 @@ describe("CLI validation and isolation", () => {
     const result = runCli(["node", "n"], { ENVINHANDS_RELAY_URL: "ws://localhost:8788", ENVINHANDS_RELAY_SECRET: "s" }, { ...c, startNode });
     c.signals.emit("SIGTERM"); c.signals.emit("SIGINT");
     expect(await result).toBe(0);
-    expect(captured).toEqual({ relayUrl: "ws://localhost:8788", nodeId: "n", secret: "s", sshPort: 22 });
+    expect(captured).toEqual({ relayUrl: "ws://localhost:8788", nodeId: "n", secret: "s", sshPort: 22, onEvent: expect.any(Function) });
     expect(closes).toBe(1);
     expect(c.signals.listenerCount("SIGTERM")).toBe(0);
     expect(c.output()).toContain("wss://");
@@ -283,4 +289,95 @@ describe("tmux over relay CLI", () => {
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+});
+
+
+test("CLI writes private metadata, redacts known secrets, and warns on faults", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "env-cli-private-"));
+  const c = context();
+  let options!: Parameters<CliDependencies["startRelay"]>[0];
+  const task = runCli(["relay"], { ENVINHANDS_LOG_DIR: dir, ENVINHANDS_RELAY_SECRET: "sensitive-secret" }, {
+    ...c, startRelay: opts => { options = opts; opts.onEvent?.("node_connected", { machineId: "sensitive-secret" }); return { hostname: "127.0.0.1", port: 1, stop() {} }; },
+  });
+  c.signals.emit("SIGTERM"); expect(await task).toBe(0);
+  const folders = readdirSync(dir); expect(folders).toHaveLength(1);
+  const folder = join(dir, folders[0]!); const file = join(folder, "events.jsonl");
+  const data = readFileSync(file, "utf8");
+  expect(data).toContain("REDACTED"); expect(data).not.toContain("sensitive-secret");
+  expect(statSync(folder).mode & 0o777).toBe(0o700); expect(statSync(file).mode & 0o777).toBe(0o600);
+  const fault = context();
+  const failed = runCli(["relay"], { ENVINHANDS_LOG_DIR: "relative", ENVINHANDS_RELAY_SECRET: "sensitive-secret" }, {
+    ...fault, startRelay: () => ({ hostname: "127.0.0.1", port: 1, stop() {} }),
+  });
+  fault.signals.emit("SIGTERM"); expect(await failed).toBe(0);
+  expect(fault.output()).toContain("Logging fault"); expect(fault.output()).not.toContain("sensitive-secret");
+  const win = context();
+  const degraded = runCli(["relay"], { ENVINHANDS_LOG_DIR: dir, ENVINHANDS_RELAY_SECRET: "sensitive-secret" }, {
+    ...win, platform: "win32", startRelay: () => ({ hostname: "127.0.0.1", port: 1, stop() {} }),
+  });
+  win.signals.emit("SIGTERM"); expect(await degraded).toBe(0);
+  expect(win.output()).toContain("unsupported_windows_acl");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+
+test("retention prunes only validated stopped writers, preserves live and unsafe paths", async () => {
+  if (process.platform !== "linux") return;
+  const base = mkdtempSync(join(tmpdir(), "env-retention-"));
+  const child = Bun.spawn([process.execPath, "-e", ""], { stdout: "ignore", stderr: "ignore" });
+  const deadPid = child.pid; await child.exited;
+  const create = (pid: number) => {
+    const dir = join(base, debugLogWriterName("server", pid)); mkdirSync(dir, { mode: 0o700 });
+    const file = join(dir, "events.jsonl");
+    writeFileSync(file, JSON.stringify({ component: "server", event: "server_started", timestamp: new Date().toISOString() }) + "\n", { mode: 0o600 });
+    return { dir, file };
+  };
+  const stopped1 = create(deadPid), stopped2 = create(deadPid), live = create(process.pid);
+  const unknown = join(base, "ordinary-user-data"); mkdirSync(unknown);
+  const target = join(base, "target"); mkdirSync(target);
+  const link = join(base, debugLogWriterName("server", deadPid)); symlinkSync(target, link);
+  const unsafe = join(base, debugLogWriterName("server", deadPid)); mkdirSync(unsafe, { mode: 0o700 });
+  symlinkSync(stopped1.file, join(unsafe, "events.jsonl"));
+  const foreign = create(deadPid); writeFileSync(foreign.file, "user content\n", { mode: 0o600 });
+  const otherNsName = debugLogWriterName("server", deadPid).replace(/-([0-9]+)$/, (_, ns: string) => `-${ns}9`);
+  const otherNs = join(base, otherNsName); mkdirSync(otherNs, { mode: 0o700 });
+  writeFileSync(join(otherNs, "events.jsonl"), JSON.stringify({ component: "server", event: "server_started", timestamp: new Date().toISOString() }) + "\n", { mode: 0o600 });
+  const age = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+  for (const e of [stopped1, stopped2, live, foreign]) { utimesSync(e.file, age, age); utimesSync(e.dir, age, age); }
+  try {
+    const first = reapDebugLogs(base, { maxAgeMs: 1000, maxTotalBytes: 1 });
+    expect(first.removed).toBe(2); expect(first.failures).toBeGreaterThanOrEqual(3);
+    expect(existsSync(stopped1.dir)).toBe(false); expect(existsSync(stopped2.dir)).toBe(false);
+    for (const path of [live.dir, unknown, target, link, unsafe, foreign.dir, otherNs]) expect(existsSync(path)).toBe(true);
+    const second = reapDebugLogs(base, { maxAgeMs: 1000, maxTotalBytes: 1 });
+    expect(second.removed).toBe(0); expect(existsSync(live.file)).toBe(true);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+
+test("real short-lived relay processes leave logs that concurrent startup cleanup can reap", async () => {
+  if (process.platform !== "linux") return;
+  const base = mkdtempSync(join(tmpdir(), "env-restarts-"));
+  try {
+    for (let i = 0; i < 2; i++) {
+      const child = Bun.spawn([process.execPath, "src/cli.ts", "relay"], {
+        env: { ...process.env, ENVINHANDS_LOG_DIR: base, ENVINHANDS_RELAY_SECRET: "test-retention-secret", ENVINHANDS_RELAY_HOST: "127.0.0.1", ENVINHANDS_RELAY_PORT: "0" },
+        stdout: "ignore", stderr: "pipe",
+      });
+      try {
+        const reader = child.stderr.getReader(); let output = "";
+        while (!output.includes("Relay started.")) {
+          const result = await reader.read(); if (result.done) throw new Error("relay exited before start");
+          output += new TextDecoder().decode(result.value);
+        }
+        child.kill("SIGTERM"); expect([0, 143]).toContain(await child.exited); reader.releaseLock();
+      } finally { child.kill("SIGTERM"); await child.exited; }
+    }
+    expect(readdirSync(base)).toHaveLength(2);
+    const script = `import { reapDebugLogs } from ${JSON.stringify(join(process.cwd(), "src/cli.ts"))}; reapDebugLogs(${JSON.stringify(base)}, { maxTotalBytes: 0, maxAgeMs: 0 });`;
+    const a = Bun.spawn([process.execPath, "-e", script], { stdout: "ignore", stderr: "ignore" });
+    const b = Bun.spawn([process.execPath, "-e", script], { stdout: "ignore", stderr: "ignore" });
+    expect(await Promise.all([a.exited, b.exited])).toEqual([0, 0]);
+    expect(readdirSync(base)).toHaveLength(0);
+  } finally { rmSync(base, { recursive: true, force: true }); }
 });

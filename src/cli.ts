@@ -19,6 +19,9 @@ import { startSshProxy } from "./ssh-proxy.ts";
 import { buildTmuxRelayArgv } from "./session/tmux-relay.ts";
 import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
+import type { DebugLogger } from "./debug-log.ts";
+import { createProcessDebugLogger } from "./process-debug-log.ts";
+export { debugLogWriterName, reapDebugLogs, createProcessDebugLogger } from "./process-debug-log.ts";
 
 const help = `Usage: bun src/cli.ts <publish PROFILE_JSON|files hosts|files resources [HOST]|files list [HOST]|files read [HOST]|files write [HOST]|files inspect [HOST]|provision|service CONFIG_JSON|prime-profile ENV_ROOT [PRIME_ROOT]|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
@@ -68,6 +71,15 @@ tmux:   ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET required. Set
         running from source. Requires interactive stdin and stdout, local ssh,
         remote ssh/tmux, and a host key verified out of band. Windows unsupported.
         A disconnected connection cannot establish the task outcome.
+
+Debug metadata JSONL: ENVINHANDS_LOG_DIR selects a private parent directory;
+otherwise ~/.local/state/envinhands is used. Each process gets a separate directory.
+On startup, verified stopped-writer directories are pruned after seven days or
+when verified logs exceed 256 MiB. Live and unsafe entries are never deleted. Cleanup is limited to the same
+Linux boot and PID namespace; older/unknown namespaces are retained. Therefore
+these limits are best effort, not a global disk quota.
+Logging is unavailable on Windows until a secure ACL implementation exists;
+the service continues with an explicit warning.
 
 Pass secrets in environment variables, never in command-line arguments.
 Plain ws:// exposes the relay secret and traffic: use only on a trusted network.
@@ -260,7 +272,7 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
   const error = (text: string) => deps.stderr.write(text + "\n");
   const [command, id] = args;
   if (command === "publish") return runRemotePublishCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
-  if (command === "service") return runServiceCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
+  if (command === "service") return runServiceCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals, { env, platform: deps.platform });
   if (command === "prime-profile") return runPrimeProfileCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)});
   if (command === "access") return runRemoteAccessCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
   if (command === "change" || command === "exec" || command === "verify-access" || command === "collaborate" || command === "device" || command === "provision" || command === "files") {
@@ -313,6 +325,11 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
       ((command === "node" || command === "proxy") ? args.length !== 2 || !nodeIdPattern.test(id ?? "") : args.length !== 1)) {
     error("Invalid command or arguments. Use --help for usage; never pass secrets as arguments."); return 1;
   }
+  let logger: DebugLogger | undefined;
+  const setupLogger = (component: string, secrets: string[]) => {
+    logger = createProcessDebugLogger(component, secrets, env, error, deps.platform, true);
+  };
+  const onEvent = (event: string, fields: import("./debug-log.ts").DebugFields) => { logger?.debug(event, fields); };
   try {
     if (command === "proxy" || command === "node") {
       const url = relayUrl(env);
@@ -323,7 +340,8 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
         return 0;
       }
       const sshPort = port(env, "ENVINHANDS_SSH_PORT", "22");
-      const runtime = deps.startNode({ relayUrl: url, nodeId: id!, secret, sshPort });
+      setupLogger("node", [secret]);
+      const runtime = deps.startNode({ relayUrl: url, nodeId: id!, secret, sshPort, onEvent });
       // ready may reject when stopped before first registration. Retry is handled by the runtime.
       void runtime.ready.catch(() => {});
       return await untilSignal(deps.signals, () => runtime.close(), runtime.finished);
@@ -332,17 +350,23 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
       const token = required(env, "ENVINHANDS_TOKEN");
       const dbPath = env.ENVINHANDS_DB ?? "envinhands.sqlite";
       if (!dbPath || /[\x00-\x1f\x7f]/.test(dbPath)) throw new UsageError("Invalid ENVINHANDS_DB.");
-      const instance = deps.startServer({ token, dbPath, hostname: hostname(env, "ENVINHANDS_HOST"), port: port(env, "ENVINHANDS_PORT", "8787", true) });
+      setupLogger("server", [token]);
+      const instance = deps.startServer({ token, dbPath, onEvent, hostname: hostname(env, "ENVINHANDS_HOST"), port: port(env, "ENVINHANDS_PORT", "8787", true) });
       error("Experimental HTTP listener started. Use HTTPS termination on untrusted networks.");
       return await untilSignal(deps.signals, () => instance.stop());
     }
-    const instance = deps.startRelay({ secret: required(env, "ENVINHANDS_RELAY_SECRET"), hostname: hostname(env, "ENVINHANDS_RELAY_HOST"), port: port(env, "ENVINHANDS_RELAY_PORT", "8788", true) });
+    const relaySecret = required(env, "ENVINHANDS_RELAY_SECRET");
+    setupLogger("relay", [relaySecret]);
+    const instance = deps.startRelay({ secret: relaySecret, onEvent, hostname: hostname(env, "ENVINHANDS_RELAY_HOST"), port: port(env, "ENVINHANDS_RELAY_PORT", "8788", true) });
     error("Relay started. Plain ws:// is for trusted networks only; use wss:// with TLS on public networks. Shared-secret access is not per-node authorization.");
     return await untilSignal(deps.signals, () => instance.stop());
   } catch (err) {
     // Never print underlying errors: they may contain a URL, secret, argv or path.
+    logger?.error("component_failed", { errorCategory: "startup_or_runtime" });
     error(err instanceof UsageError ? err.message : "Command failed.");
     return 1;
+  } finally {
+    logger?.close();
   }
 }
 

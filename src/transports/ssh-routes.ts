@@ -1,6 +1,6 @@
 /** Real SSH probes for new connections. Never retry a started remote command. */
 import { isIP } from "node:net";
-import { isAbsolute } from "node:path";
+import { isAbsolute, win32 } from "node:path";
 import { selectTransport, type TransportCandidate } from "./policy.ts";
 import { runCommand, type CommandRunner } from "../readiness.ts";
 
@@ -10,6 +10,11 @@ export interface SshRoute {
   port?: number;
   /** Optional preconfigured jump host. Authentication stays in local SSH config. */
   jump?: string;
+  /** Reverse relay via the compiled envinhands executable, not an arbitrary command.
+   * The proxy inherits ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET.
+   * Establish hostKeyAlias trust independently; use wss on untrusted networks.
+   */
+  relay?: { relayNodeId: string; binaryPath: string };
 }
 export interface SshAccess {
   user: string;
@@ -29,15 +34,50 @@ export function buildSshRouteArgv(route: SshRoute, access: SshAccess): string[] 
       !Number.isInteger(route.port ?? 22) || (route.port ?? 22) < 1 || (route.port ?? 22) > 65535 ||
       !access || !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(access.user) || /[\r\n]/.test(access.user) || !host(access.hostKeyAlias) ||
       (route.jump !== undefined && !host(route.jump))) throw new Error("Invalid SSH route");
-  const args = ["-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10",
-    "-o", `HostKeyAlias=${access.hostKeyAlias}`];
-  for (const [option, value] of [["IdentityFile", access.identityFile], ["UserKnownHostsFile", access.knownHostsFile]]) {
-    if (value === undefined) continue;
-    if (!isAbsolute(value) || /[\x00-\x1f\x7f%]/.test(value)) throw new Error("Invalid SSH credential path");
-    args.push("-o", `${option}=${value}`);
+  let proxy: string | undefined;
+  if (route.relay !== undefined) {
+    const relay = route.relay;
+    if (process.platform === "win32") throw new Error("Windows is unsupported for SSH ProxyCommand");
+    if (!relay || typeof relay !== "object" || Array.isArray(relay) ||
+        Object.keys(relay).some(key => !["relayNodeId", "binaryPath"].includes(key)) ||
+        typeof relay.relayNodeId !== "string" || relay.relayNodeId.length < 1 || relay.relayNodeId.length > 128 ||
+        !/^[A-Za-z0-9_-]/.test(relay.relayNodeId) || /[^A-Za-z0-9._-]/.test(relay.relayNodeId) ||
+        typeof relay.binaryPath !== "string" || !isAbsolute(relay.binaryPath) || /[%\x00-\x1f\x7f]/.test(relay.binaryPath) ||
+        route.jump !== undefined) throw new Error("Invalid SSH relay route");
+    // OpenSSH expands %-tokens before the POSIX shell parses ProxyCommand.
+    // Reject '%' above; quote each shell word and never interpolate the secret.
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+    proxy = `ProxyCommand=${quote(relay.binaryPath)} proxy ${quote(relay.relayNodeId)}`;
   }
-  if (access.identityFile) args.push("-o", "IdentitiesOnly=yes");
-  if (route.jump) args.push("-J", route.jump);
+  // -F also suppresses system config. IdentitiesOnly alone does not: every
+  // IdentityFile in config would still be offered. NUL is the Windows null
+  // device; unsupported clients must fail rather than fall back to config.
+  const windows = process.platform === "win32";
+  // The jump ProxyCommand below uses POSIX shell quoting. Keep Windows jump
+  // routes closed until their separate command quoting is verified.
+  if (windows && route.jump) throw new Error("Windows SSH jump routes are not supported");
+  const args = ["-F", windows ? "NUL" : "/dev/null", "-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10",
+    "-o", `HostKeyAlias=${access.hostKeyAlias}`, "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no",
+    "-o", "IdentityAgent=none", "-o", "IdentitiesOnly=yes", "-o", "PreferredAuthentications=publickey",
+    "-o", "PubkeyAuthentication=yes", "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
+    "-o", "GSSAPIAuthentication=no", "-o", "HostbasedAuthentication=no", "-o", "AddKeysToAgent=no"];
+  for (const value of [access.identityFile, access.knownHostsFile]) {
+    if (value !== undefined && (!(windows ? win32.isAbsolute(value) : isAbsolute(value)) || /[\x00-\x1f\x7f%]/.test(value))) throw new Error("Invalid SSH credential path");
+  }
+  if (access.identityFile !== undefined) args.push("-i", windows ? access.identityFile.replaceAll("\\", "/") : access.identityFile);
+  if (access.knownHostsFile !== undefined) {
+    // OpenSSH parses -o as a configuration line. Reject quoting characters so
+    // spaces remain part of this single filename, not another trust store.
+    const path = windows ? access.knownHostsFile.replaceAll("\\", "/") : access.knownHostsFile;
+    if (/["\\]/.test(path)) throw new Error("Invalid SSH credential path");
+    const knownHosts = /\s/.test(path) ? `"${path}"` : path;
+    args.push("-o", `UserKnownHostsFile=${knownHosts}`, "-o", "GlobalKnownHostsFile=none");
+  }
+  // -J would propagate -F /dev/null to the jump ssh. Keep its local aliases,
+  // user and authentication config, but never let it reuse a master either.
+  // Both substituted host and jump are validated above; no shell metacharacters.
+  if (route.jump) args.push("-o", `ProxyCommand=ssh -o ControlMaster=no -o ControlPath=none -o ControlPersist=no -W '[%h]:%p' -- ${route.jump}`);
+  if (proxy) args.push("-o", proxy);
   args.push("-p", String(route.port ?? 22), "-l", access.user, "--", route.host);
   return args;
 }

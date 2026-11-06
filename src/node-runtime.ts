@@ -47,6 +47,10 @@ export function startNodeRuntime(options: NodeRuntimeOptions, dependencies: Node
   const clearTimer: NonNullable<NodeRuntimeDependencies["clearTimeout"]> = dependencies.clearTimeout ?? clearTimeout;
   let stopped = false;
   let connected = false;
+  let retries = 0;
+  const emit = (event: string, fields: { retry?: number; durationMs?: number; errorCategory?: string } = {}) => {
+    try { options.onEvent?.(event, { machineId: options.nodeId, ...fields }); } catch {}
+  };
   let current: NodeConnection | undefined;
   let cancelDelay: (() => void) | undefined;
   let resolveReady!: () => void;
@@ -89,6 +93,7 @@ export function startNodeRuntime(options: NodeRuntimeOptions, dependencies: Node
           // Do not start another connection while the old control socket lives.
           await client.closed.catch(() => {});
         } catch {
+          emit("node_error", { errorCategory: "connection" });
           if (client) {
             closeConnection(client);
             await client.closed.catch(() => {});
@@ -103,6 +108,7 @@ export function startNodeRuntime(options: NodeRuntimeOptions, dependencies: Node
         sample = Math.max(0, Math.min(1, sample));
         const wait = Math.max(1, Math.floor(next * (1 - jitter + jitter * sample)));
         next = Math.min(max, next * 2);
+        emit("node_reconnect_scheduled", { retry: ++retries, durationMs: wait });
         await delay(wait);
       }
     } finally {

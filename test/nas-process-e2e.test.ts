@@ -23,11 +23,17 @@ type Running = {
   child: ChildProcessWithoutNullStreams;
   closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   output: { stdout: string; stderr: string };
+  events: string[];
 };
 
 function launch(args: string[], env: NodeJS.ProcessEnv, children: Set<Running>): Running {
   const child = spawn(process.execPath, [cli, ...args], { cwd: project, env, stdio: "pipe" });
   const output = { stdout: "", stderr: "" };
+  const events: string[] = [];
+  child.once("spawn", () => events.push("spawn"));
+  child.once("exit", (code, signal) => events.push(`exit:${code ?? "null"}:${signal ?? "none"}`));
+  child.once("close", (code, signal) => events.push(`close:${code ?? "null"}:${signal ?? "none"}`));
+  child.once("error", () => events.push("error"));
   // Drain both pipes as the process runs. Output is deliberately not logged.
   child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => { output.stdout += chunk; });
@@ -36,7 +42,7 @@ function launch(args: string[], env: NodeJS.ProcessEnv, children: Set<Running>):
     child.once("error", () => reject(new Error("Could not start CLI process")));
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
-  const running = { child, closed, output };
+  const running = { child, closed, output, events };
   children.add(running);
   return running;
 }
@@ -70,7 +76,18 @@ async function startService(config: string, token: string, env: NodeJS.ProcessEn
     void running.closed.then(() => reject(new Error("Service exited before readiness")), reject);
     onData();
   });
-  const info = await deadline(ready, "Service readiness");
+  let info: Awaited<typeof ready>;
+  try { info = await deadline(ready, "Service readiness"); }
+  catch {
+    // Diagnostic categories only: never copy arbitrary child output or credentials.
+    const stderr = running.output.stderr;
+    const categories = [
+      stderr.includes("Control service failed.") ? "service-failed" : "",
+      stderr.includes("Logging fault") ? "logging-fault" : "",
+      stderr.includes("Logging retention fault") ? "logging-retention-fault" : "",
+    ].filter(Boolean).join(",") || "none-recognized";
+    throw new Error(`Service failed before readiness; events=${running.events.join(",") || "none"}; stdout-bytes=${Buffer.byteLength(running.output.stdout)}; stderr-bytes=${Buffer.byteLength(stderr)}; stderr-categories=${categories}`);
+  }
   expect(info.type).toBe("ready");
   if (running.child.pid === undefined) throw new Error("Service process has no PID");
   expect(info.pid).toBe(running.child.pid);

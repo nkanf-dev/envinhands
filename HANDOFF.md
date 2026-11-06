@@ -2,6 +2,26 @@
 
 > 当前为实验原型，不能直接用于生产或公开暴露公网。
 
+## 2026-11-06 NAS pilot：实际状态与恢复
+
+- NAS 为 Debian 12 x86_64，现有 FRP 只暴露其 SSH 入口；Env 控制与 relay 均监听 NAS loopback，客户端通过 SSH 加密转发访问。NAS 用户级服务 `envinhands-team-control`、`envinhands-team-relay` 和 `envinhands-team-readiness` 在运行；服务/relay 版本基于 `654b36a`，control 使用修复重复 exec 的实验二进制，readiness 为独立构建。后续代码尚未全部部署，不能仅以 Git HEAD 断言服务版本。
+- 为 NAS 账户添加了仅该用户的 `AllowTcpForwarding local` SSH 配置（`/etc/ssh/sshd_config.d/00-envinhands-team-forwarding.conf`），变更前后 `sshd -t`、匹配用户及 root 策略检查通过并 reload；没有新增公网端口。回退先停用使用该转发的 Env 进程，再删除此 owned 配置并 `sshd -t` 后 reload；不要改其他 SSH 配置。
+- NAS 账密与本次传输配置不在仓库。NAS 控制配置在 `~/.local/share/envinhands/` 的 team pilot 目录，以 owner-only 权限保存；本机客户端入口在 `~/.config/envinhands/` 的对应 team 私有目录。NAS 专用 SSH key 不应转发或提交。
+- `local-desktop`、`mac-laptop` 和 `rtx-home` 已通过 NAS relay 的真实 SSH + 管理员能力检查；本机与 Mac 的各自客户端密钥还分别做过双向 SSH + sudo。服务端 ready 是该身份检查时点结果。RTX 有效 Windows 管理员 token 经过真实 SSH 测试。
+- 本机用户 systemd units `envinhands-nas-tunnel` 和 `envinhands-local-node`；Mac 用户 LaunchAgents `io.envinhands.pilot.tunnel/node`。它们使用私有配置、只处理当前用户会话；Linux linger 未启用。RTX `\EnvInHands-RTX-NAS-04bfb228b4d7` 是该用户登录触发的 Limited 任务，断 tunnel 后自动恢复已实测，未实测注销/登录。节点不保证机器休眠/断电持续在线。
+- 本机及 Mac 的两个真实 Prime 0.9.8 会话经 NAS 用**现有协作工具扩展**双向 send/pull/ack 并共同读写 notes，非原生 agent_message。独立的两个真实 Prime daemon + 临时服务已验证 native mesh roster/stored/接收记录/ACK，尚未在真实 NAS/三机加载验证、未证明断电恢复。
+- 用户要求 team/prime 与主线共存、自动复用现有 0.9.8 配置、自动加载 skills、Agent 名以前缀标示节点。Prime 原生跨机代码在开发并已通过隔离双 daemon 的 stored、持久、ACK、同 operation ID 重试及故障边界测试；尚未在真实 NAS/三台设备实测或发布。新服务端必须先升级，随后升级客户端，不能将本地代码等同于已部署服务。
+- EasyTier v2.6.4 在本机与 Mac 的临时独立网络实测双向 SSH、P2P/TCP 及断链重连，默认路由不变；本次是同 LAN，不等于跨 NAT/公网。运行进程及临时配置按用户 pilot 管理，停止前须核对所属；Cloudflare Quick Tunnel 实验返回 530，FRP 官方本地数据平面可测，UU 不应误称跨机接通。
+- 账号密码曾出现在对话中，建议用户自行轮换；切勿将密码、token、私钥或团队私有服务配置提交至 Git 或日志。共享 token 在团队信任域内有效，不提供个体强身份。
+
+## 2026-11-06 整合开发说明
+
+本轮本地整合验证：Bun 1.4.4，启用官方本地 FRP 测试和用户 FRP 配置离线解析时 **333 通过、1 跳过（真实 Cloudflare Quick Tunnel；本次独立 live 测试失败）**，类型检查通过。FRP 测试没有启动或覆盖用户已有 proxy。这里记录本地代码测试，不等于 NAS 运行版本已经升级。
+
+Prime fork `npm run check` 通过；对变更测试使用三个乱序种子检查均通过，每轮 296 通过、2 跳过。native mesh 已通过临时服务双 daemon 的注册、发现、持久投递、ACK 和同 operation ID 重试，**尚未在真实 NAS/三台设备运行该新版本**。
+
+新增 Agent 画像 notes、native mesh 目录分页、服务器/节点 debug 事件日志、断线检测、自动复核与传输 sidecar；多个后端仍需真正接线和跨网络验证。日志只含事件元数据，不含 SSH 终端正文；共享 token 是团队信任，不构成个体强身份。原访问证据旧 API 的失败重验与并发 stale-ready 问题仍在，新增 generation API 尚未被现有消费者完整使用，不可把旧 evidence 当成当前 Agent 的保证。
+
 ## 最新可接手版本
 
 - Env功能源码 `ba9a9d289eb1adb18799e18b2d597c7c1aa0d6c9` 已push并独立核远端SHA：Windows221pass/type0，精确186文件Linux220pass/1skip/0fail/type0。唯一skip为可选外部Prime直接导入；单独真实Prime证据见下。

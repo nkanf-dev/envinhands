@@ -65,3 +65,46 @@ test("actual selected public identity changes when a key is replaced at the same
     await assert.rejects(verifyClientAccess({ ...options, access: { user: "agent", hostKeyAlias: "trusted.host" } }, { fingerprint, runner: async () => ({ exitCode: 0 }) }));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+// Characterization only: these tests expose an unresolved fail-open behavior, not a fix.
+// A caller that submits only returned evidence has nothing to submit after these failures.
+test("KNOWN BUG: post-ready route and fingerprint failures return no scoped negative", async () => {
+  const ready = await verifyClientAccess(options, { fingerprint, now: () => 1000, runner: async () => ({ exitCode: 0 }) });
+  const expected = { registrationId: ready.registrationId, agentId: ready.agentId, sessionId: ready.sessionId,
+    targetMachineId: ready.targetMachineId, routeId: ready.routeId, sshIdentityRef: ready.sshIdentityRef,
+    sshUser: ready.sshUser, hostKeyAlias: ready.hostKeyAlias };
+  for (const exitCode of [255, 1]) { // SSH host-key/authentication and general route failure.
+    await assert.rejects(verifyClientAccess(options, { fingerprint, now: () => 1001, runner: async () => ({ exitCode }) }));
+    assert.equal(isClientAccessFresh(ready, expected, 1001), true); // stale positive still authorizes
+  }
+  let ran = false;
+  await assert.rejects(verifyClientAccess(options, { now: () => 1001, fingerprint: async () => { throw new Error("unreadable"); },
+    runner: async () => { ran = true; return { exitCode: 0 }; } }));
+  assert.equal(ran, false); // unknown identity is not a failed SSH probe or a fingerprint
+  assert.equal(isClientAccessFresh(ready, expected, 1001), true);
+});
+
+test("KNOWN BUG: failed route before successful alternate is omitted", async () => {
+  const routes = [{ id: "first", host: "one.local" }, { id: "second", host: "two.local" }];
+  const calls: string[] = [];
+  const result = await verifyClientAccess({ ...options, routes, priority: ["first", "second"] }, {
+    fingerprint, now: () => 1000, runner: async (_cmd, argv) => {
+      const host = argv[argv.indexOf("--") + 1]; calls.push(host);
+      return { exitCode: host === "one.local" ? 255 : 0 };
+    },
+  });
+  assert.deepEqual(calls, ["one.local", "two.local", "two.local"]);
+  assert.equal(result.routeId, "second"); assert.equal(result.ready, true);
+  // No result exists for the attempted failed first route.
+});
+
+test("KNOWN BUG: all route probes failing produce no negative evidence", async () => {
+  const routes = [{ id: "first", host: "one.local" }, { id: "second", host: "two.local" }];
+  const calls: string[] = [];
+  await assert.rejects(verifyClientAccess({ ...options, routes, priority: ["first", "second"] }, {
+    fingerprint, now: () => 1000, runner: async (_cmd, argv) => {
+      calls.push(argv[argv.indexOf("--") + 1]); return { exitCode: 255 };
+    },
+  }));
+  assert.deepEqual(calls, ["one.local", "two.local"]);
+});

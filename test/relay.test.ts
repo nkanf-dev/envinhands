@@ -524,3 +524,19 @@ test("unsolicited wrong pong payloads do not keep a relay registration alive", a
   const status = await fetch(base.replace("ws:", "http:") + "/client?node=wrong-pong&v=2", { headers: { Authorization: `Bearer ${secret}` } });
   expect(status.status).toBe(404);
 }, 2500);
+
+
+test("relay emits metadata for node and timed out session without credentials", async () => {
+  const events: Array<{ event: string; fields: unknown }> = [];
+  const { relay, base } = startRelay(30, { onEvent(event, fields) { events.push({ event, fields }); } });
+  const control = connect(base, "/node?id=log-node");
+  await nextText(control);
+  const client = connect(base, "/client?node=log-node");
+  const request = JSON.parse(await nextText(control));
+  await closed(client);
+  const end = events.find(e => e.event === "ssh_session_end");
+  expect(end?.fields).toMatchObject({ machineId: "log-node", sessionId: request.id, errorCategory: "timeout", status: "aborted" });
+  expect(JSON.stringify(events)).not.toContain(secret);
+  expect(events.some(e => e.event === "node_registered")).toBe(true);
+  relay.stop(); expect(events.some(e => e.event === "relay_stopped")).toBe(true);
+});

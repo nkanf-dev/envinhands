@@ -279,3 +279,17 @@ test("runtime reconnects after a silent TCP blackhole is removed", async () => {
     proxy.close(); relay.stop();
   }
 }, 7000);
+
+
+test("reconnect metadata includes retry and ignores observer failures", async () => {
+  const timers = fakeTimers();
+  const events: Array<[string, unknown]> = [];
+  const runtime = startNodeRuntime({ ...options, onEvent(event, fields) { events.push([event, fields]); throw new Error("observer fault"); } }, {
+    ...timers, startClient() { throw new Error("secret error text"); },
+  });
+  const ready = runtime.ready.catch(() => {});
+  await flush();
+  expect(events).toContainEqual(["node_reconnect_scheduled", { machineId: "test-node", retry: 1, durationMs: 10 }]);
+  expect(JSON.stringify(events)).not.toContain("secret error text");
+  runtime.close(); await runtime.finished; await ready;
+});

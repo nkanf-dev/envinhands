@@ -58,3 +58,36 @@ export function parseAccessEvidenceQuery(params: URLSearchParams): AccessEvidenc
   return { registrationId: accessId(params.get("registrationId")), targetMachineId: accessId(params.get("targetMachineId")), ...page,
     ...(params.has("routeId") ? { routeId: accessId(params.get("routeId")) } : {}), ...(params.has("sshIdentityRef") ? { sshIdentityRef: publicKeyFingerprint(params.get("sshIdentityRef")) } : {}) };
 }
+
+/**
+ * V2 is opt-in and separate from legacy append-only observations. The client must
+ * begin online before starting each check; failed begin, commit, or current read
+ * means unknown locally. Never use a cached ready when the service is unavailable.
+ * Read current online and match the returned evidence to the intended route, key,
+ * user and host before using ready; scope alone is not sufficient. A beginId is
+ * unique per attempt and retries return the original generation, even if superseded.
+ * Legacy consumers remain unsafe for readiness. Client/server routing and consumers
+ * must be integrated and migrated before NAS use. Shared bearer is not identity proof.
+ */
+export interface AccessCheckScope { registrationId: string; agentId: string; sessionId: string; targetMachineId: string }
+export function parseAccessCheckScope(value: unknown): AccessCheckScope {
+  const v = exact(value, ["registrationId", "agentId", "sessionId", "targetMachineId"]);
+  return { registrationId: accessId(v.registrationId), agentId: accessId(v.agentId), sessionId: accessId(v.sessionId), targetMachineId: accessId(v.targetMachineId) };
+}
+export function parseAccessCheckBegin(value: unknown) {
+  const v = exact(value, ["action", "beginId", "scope"]);
+  if (v.action !== "begin") throw new AccessEvidenceInputError("Invalid check action");
+  return { beginId: accessId(v.beginId), scope: parseAccessCheckScope(v.scope) };
+}
+export function parseAccessCheckCommit(value: unknown) {
+  const v = exact(value, ["action", "generation", "scope", "result"]);
+  if (v.action !== "commit") throw new AccessEvidenceInputError("Invalid check action");
+  const result = v.result && typeof v.result === "object" && !Array.isArray(v.result) && (v.result as Record<string, unknown>).status === "unknown"
+    ? (exact(v.result, ["status"]), null) : parseAccessEvidence(v.result);
+  return { generation: accessId(v.generation), scope: parseAccessCheckScope(v.scope), result };
+}
+export function parseAccessCheckQuery(params: URLSearchParams): AccessCheckScope {
+  const keys = ["view", "registrationId", "agentId", "sessionId", "targetMachineId"];
+  if ([...params.keys()].some(k => !keys.includes(k)) || keys.some(k => params.getAll(k).length !== 1) || params.get("view") !== "current") throw new AccessEvidenceInputError("Invalid check query");
+  return parseAccessCheckScope(Object.fromEntries(keys.slice(1).map(k => [k, params.get(k)])));
+}

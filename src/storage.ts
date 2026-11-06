@@ -137,11 +137,21 @@ export class Storage {
     return rows.map(row => this.machine(row)!);
   }
 
-  /** Invalidate previous evidence before starting a check. Token prevents stale concurrent results winning. */
-  beginVerification(id: string): string {
+  /**
+   * Replace the verification token so stale concurrent results cannot win.
+   * Manual checks invalidate evidence immediately by default. Background checks
+   * may retain existing ready evidence, but never change its timestamp: normal
+   * TTL expiry still applies even if the check or process never finishes.
+   */
+  beginVerification(id: string, options?: { preserveReady?: boolean }): string {
     this.checkOpen();
     const token = randomUUID();
-    const result = this.db.query("UPDATE machines SET status = 'not-ready', verifiedAt = NULL, verificationToken = ? WHERE id = ?").run(token, identifier(id, "id"));
+    const result = options?.preserveReady === true
+      ? this.db.query(`UPDATE machines SET
+          status = CASE WHEN status = 'ready' THEN status ELSE 'not-ready' END,
+          verifiedAt = CASE WHEN status = 'ready' THEN verifiedAt ELSE NULL END,
+          verificationToken = ? WHERE id = ?`).run(token, identifier(id, "id"))
+      : this.db.query("UPDATE machines SET status = 'not-ready', verifiedAt = NULL, verificationToken = ? WHERE id = ?").run(token, identifier(id, "id"));
     if (!result.changes) throw new Error("Machine not found");
     return token;
   }

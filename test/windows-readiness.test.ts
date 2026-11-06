@@ -119,7 +119,7 @@ test("Windows relay uses the shared POSIX proxy and the same fixed token check",
     const proxyIndex = args.findIndex(a => a.startsWith("ProxyCommand="));
     assert.ok(proxyIndex > 0);
     assert.equal(args[proxyIndex - 1], "-o");
-    assert.equal(args[proxyIndex], "ProxyCommand=exec '" + dir + "/proxy " + "'\\''" + " $(touch PWNED)' proxy node-1");
+    assert.equal(args[proxyIndex], "ProxyCommand='" + dir + "/proxy " + "'\\''" + " $(touch PWNED)' proxy node-1");
     assert.ok(!args.join(" ").includes(process.env.ENVINHANDS_RELAY_SECRET));
     assert.ok(!args.join(" ").includes(process.env.ENVINHANDS_RELAY_URL));
     args.splice(proxyIndex - 1, 2);

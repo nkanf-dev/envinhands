@@ -89,7 +89,7 @@ test("relay ProxyCommand quotes its absolute binary path and never contains cred
     assert.deepEqual(args.slice(-3), ["sudo", "-n", "true"]);
     assert.ok(!args.join(" ").includes(process.env.ENVINHANDS_RELAY_SECRET));
     assert.ok(!args.join(" ").includes(process.env.ENVINHANDS_RELAY_URL));
-    assert.equal(option, "ProxyCommand=exec '" + dir + "/proxy " + "'\\''" + " $(touch PWNED)' proxy node-1");
+    assert.equal(option, "ProxyCommand='" + dir + "/proxy " + "'\\''" + " $(touch PWNED)' proxy node-1");
   } finally {
     keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
     await rm(dir, { recursive: true, force: true });

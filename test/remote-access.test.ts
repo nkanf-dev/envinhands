@@ -25,7 +25,10 @@ test("real loopback HTTP passes through owned SSH-stdio fixture with strict argv
     assert.equal(args.includes("-n"), false); assert.ok(args.includes("-T"));
     assert.ok(args.includes("BatchMode=yes")); assert.ok(args.includes("StrictHostKeyChecking=yes")); assert.ok(args.includes("IdentitiesOnly=yes"));
     const separator = args.indexOf("--"); assert.ok(args.indexOf("-W") < separator); assert.equal(args[args.indexOf("-W") + 1], `127.0.0.1:${address.port}`); assert.equal(args[separator + 1], "control.example");
-    assert.equal(args[args.indexOf("-J") + 1], "trusted-jump");
+    // Target uses isolated -F /dev/null; the explicit jump subprocess preserves
+    // the configured jump alias without passing target isolation into the jump.
+    assert.equal(args.includes("-J"), false);
+    assert.ok(args.some(arg => arg.startsWith("ProxyCommand=ssh ") && arg.includes("trusted-jump")));
   } finally { await bridge.close(); await bridge.close(); await new Promise<void>(resolve => http.close(() => resolve())); }
   assert.ok(children.every(child => child.exitCode !== null || child.signalCode !== null));
   await assert.rejects(fetch(bridge.url));

@@ -1,3 +1,6 @@
+import type { DebugFields } from "./debug-log.ts";
+export type DebugEventHandler = (event: string, fields: DebugFields) => void;
+function emit(handler: DebugEventHandler | undefined, event: string, fields: DebugFields = {}) { try { handler?.(event, fields); } catch {} }
 import { RELAY_VERSION, REGISTERED, READY, FIN, FIN_ACK, relayControl, relayEndpoint } from "./relay-protocol.ts";
 /**
  * TEST PROTOTYPE ONLY. A shared bearer secret gives every holder full access to
@@ -82,10 +85,11 @@ type ServerSocket = import("bun").ServerWebSocket<SocketData>;
 type Session = {
   id: string; node: string; client: ServerSocket; channel?: ServerSocket;
   ready: boolean; timer: ReturnType<typeof setTimeout>;
-  clientFin: boolean; nodeFin: boolean; clientAck: boolean; nodeAck: boolean;
+  clientFin: boolean; nodeFin: boolean; clientAck: boolean; nodeAck: boolean; started: number;
 };
 
 export interface RelayOptions {
+  onEvent?: DebugEventHandler;
   secret: string;
   hostname?: string;
   port?: number;
@@ -139,6 +143,7 @@ export function createRelayServer(options: RelayOptions) {
     const s = sessions.get(id);
     if (!s) return;
     sessions.delete(id);
+    emit(options.onEvent, "ssh_session_end", { machineId: s.node, sessionId: id, transport: "websocket", durationMs: Math.max(0, performance.now() - s.started), status: code === 1000 ? "complete" : "aborted", ...(code === 1000 ? {} : { errorCategory: (reason === "FIN completion timed out" || reason === "setup timeout") ? "timeout" : reason === "Relay buffer exceeded" ? "buffer" : "connection" }) });
     sessionCount--;
     clearTimeout(s.timer);
     try { s.client.close(code, reason); } catch {}
@@ -150,6 +155,7 @@ export function createRelayServer(options: RelayOptions) {
     const id = ws.data.id;
     if (nodes.get(id) !== ws) return;
     nodes.delete(id);
+    emit(options.onEvent, "node_disconnected", { machineId: id, transport: "websocket" });
     for (const [key, session] of sessions) if (session.node === id) end(key);
   }
   function terminateNode(ws: ServerSocket) {
@@ -219,18 +225,21 @@ export function createRelayServer(options: RelayOptions) {
         if (role === "node") {
           if (nodes.has(id)) { ws.close(1008, "Node already registered"); return; }
           nodes.set(id, ws);
+          emit(options.onEvent, "node_connected", { machineId: id, transport: "websocket" });
           if (!sendRelayFrame(ws, REGISTERED)) { terminateNode(ws); return; }
+          emit(options.onEvent, "node_registered", { machineId: id, transport: "websocket" });
           heartbeats.set(ws, heartbeat(heartbeatInterval, heartbeatTimeout, nonce => {
             try { return ws.getBufferedAmount() + nonce.length + 14 <= MAX_BUFFER && ws.ping(nonce) !== 0; }
             catch { return false; }
-          }, () => terminateNode(ws)));
+          }, () => { emit(options.onEvent, "node_timeout", { machineId: id, errorCategory: "heartbeat", transport: "websocket" }); terminateNode(ws); }));
         } else if (role === "client") {
           const node = nodes.get(id);
           if (!node) { ws.close(1011, "Node unavailable"); return; }
           const sessionId = crypto.randomUUID();
-          const session: Session = { id: sessionId, node: id, client: ws, ready: false, clientFin: false, nodeFin: false, clientAck: false, nodeAck: false,
-            timer: setTimeout(() => end(sessionId), timeout) };
+          const session: Session = { id: sessionId, node: id, client: ws, ready: false, clientFin: false, nodeFin: false, clientAck: false, nodeAck: false, started: performance.now(),
+            timer: setTimeout(() => end(sessionId, 1011, "setup timeout"), timeout) };
           sessions.set(sessionId, session);
+          emit(options.onEvent, "ssh_session_open", { machineId: id, sessionId, transport: "websocket" });
           ws.data.sessionReserved = false;
           // Set before sending: a synchronous failure must still clean up this session.
           ws.data.id = sessionId;
@@ -291,6 +300,8 @@ export function createRelayServer(options: RelayOptions) {
       },
     },
   });
+  emit(options.onEvent, "relay_started", { transport: "websocket" });
+  const relayStarted = performance.now();
   return {
     hostname: server.hostname,
     port: server.port!,
@@ -303,11 +314,13 @@ export function createRelayServer(options: RelayOptions) {
       for (const ws of sockets) try { ws.terminate(); } catch {}
       nodes.clear();
       server.stop(true);
+      emit(options.onEvent, "relay_stopped", { transport: "websocket", durationMs: Math.max(0, performance.now() - relayStarted) });
     },
   };
 }
 
 export interface NodeClientOptions {
+  onEvent?: DebugEventHandler;
   /** Base ws:// or wss:// URL of the relay. */
   relayUrl: string;
   nodeId: string;
@@ -347,10 +360,14 @@ export function startNodeClient(options: NodeClientOptions) {
   // Only the control WebSocket lifetime is represented, not SSH session drain.
   const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
   let controlHeartbeat: ReturnType<typeof heartbeat> | undefined;
-  const registrationTimer = setTimeout(() => stop(), registrationTimeout);
+  emit(options.onEvent, "node_connecting", { machineId: options.nodeId, transport: base.protocol === "wss:" ? "wss" : "ws" });
+  const nodeFields = { machineId: options.nodeId, transport: base.protocol === "wss:" ? "wss" : "ws" };
+  const nodeStarted = performance.now();
+  const registrationTimer = setTimeout(() => { emit(options.onEvent, "node_timeout", { ...nodeFields, errorCategory: "registration" }); stop(); }, registrationTimeout);
   function stop() {
     if (stopped) return;
     stopped = true;
+    emit(options.onEvent, "node_disconnected", { ...nodeFields, durationMs: Math.max(0, performance.now() - nodeStarted), status: registered ? "registered" : "unregistered" });
     clearTimeout(registrationTimer);
     controlHeartbeat?.stop();
     if (!registered) rejectReady(new Error("Node registration failed or closed"));
@@ -360,6 +377,8 @@ export function startNodeClient(options: NodeClientOptions) {
   }
   function connect(id: string) {
     if (stopped || channels.size >= 256) return;
+    emit(options.onEvent, "ssh_session_open", { ...nodeFields, sessionId: id });
+    const started = performance.now();
     const ws = new WebSocket(relayEndpoint(base.toString(), "/channel", "id", id), { headers });
     ws.binaryType = "arraybuffer";
     let tcp: import("bun").Socket | undefined;
@@ -368,15 +387,16 @@ export function startNodeClient(options: NodeClientOptions) {
     let pending: Uint8Array[] = [], early: Uint8Array[] = [];
     let pendingBytes = 0, earlyBytes = 0;
     const boundFinish = () => { if (!drainTimer) drainTimer = setTimeout(abort, DRAIN_TIMEOUT_MS); };
-    function finish() {
+    function finish(status = "complete") {
       if (closed) return;
+      emit(options.onEvent, "ssh_session_end", { ...nodeFields, sessionId: id, durationMs: Math.max(0, performance.now() - started), status, ...(status === "aborted" ? { errorCategory: "connection" } : {}) });
       closed = true; channels.delete(abort);
       if (drainTimer) clearTimeout(drainTimer);
       pending = []; early = []; pendingBytes = earlyBytes = 0;
     }
     function abort() {
       if (closed) return;
-      finish(); try { tcp?.terminate(); } catch {}
+      finish("aborted"); try { tcp?.terminate(); } catch {}
       // Abort never claims delivery; do not retain a blackholed close handshake.
       try { ws.terminate(); } catch {}
     }
@@ -474,11 +494,12 @@ export function startNodeClient(options: NodeClientOptions) {
     if (event.data === REGISTERED && !registered) {
       if (performance.now() >= registrationDeadline) { stop(); return; }
       registered = true;
+      emit(options.onEvent, "node_registered", { ...nodeFields, durationMs: Math.max(0, performance.now() - nodeStarted) });
       clearTimeout(registrationTimer);
       controlHeartbeat = heartbeat(heartbeatInterval, heartbeatTimeout, nonce => {
         if (control.readyState !== WebSocket.OPEN || control.bufferedAmount + nonce.length + 14 > MAX_BUFFER) return false;
         try { control.ping(nonce); return true; } catch { return false; }
-      }, stop);
+      }, () => { emit(options.onEvent, "node_timeout", { ...nodeFields, errorCategory: "heartbeat" }); stop(); });
       resolveReady(); return;
     }
     if (!registered || typeof event.data !== "string") { stop(); return; }
@@ -491,7 +512,8 @@ export function startNodeClient(options: NodeClientOptions) {
   control.addEventListener("pong", event => {
     if (event.data instanceof ArrayBuffer) controlHeartbeat?.pong(new TextDecoder().decode(event.data));
   });
-  control.onerror = stop;
+  control.onopen = () => emit(options.onEvent, "node_connected", nodeFields);
+  control.onerror = () => { emit(options.onEvent, "node_error", { ...nodeFields, errorCategory: "connection" }); stop(); };
   control.onclose = () => { stop(); resolveClosed(); };
   return { ready, closed, close: stop };
 }

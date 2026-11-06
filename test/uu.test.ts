@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
-import { startUuPortmap, type UuPortmapOptions, type UuSpawnRunner } from "../src/transports/uu";
+import { probeUuViewerAccount, probeUuViewerInstallation, probeUuMappedSsh, startUuPortmap, type UuPortmapOptions, type UuSpawnRunner } from "../src/transports/uu";
 
 const valid: UuPortmapOptions = { device: "device-1", localPort: 2200, port: 22 };
 
@@ -92,5 +92,61 @@ describe("optional UU portmap process", () => {
     expect(process.stop()).toBe(false);
     m.child.emit("exit", 0, null);
     expect(await process.exited).toEqual({ kind: "exit", code: 0, signal: null });
+  });
+});
+
+
+describe("operator-managed UU SSH mapping", () => {
+  const opts = { id: "uu", localPort: 2200, access: { user: "alice", hostKeyAlias: "trusted-machine", knownHostsFile: "/tmp/known_hosts", identityFile: "/tmp/id_ed25519" } };
+  test("only a strict SSH and user authentication probe marks the route healthy", async () => {
+    let calls: unknown[][] = [];
+    const result = await probeUuMappedSsh(opts, async (...args) => { calls.push(args); return { exitCode: 0 }; });
+    expect(result.status).toBe("healthy");
+    expect(result.installation).toBe("unknown");
+    expect(result.login).toBe("unknown");
+    expect(result.route).toEqual({ id: "uu", host: "127.0.0.1", port: 2200 });
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.[0]).toBe("ssh");
+    const argv = calls[0]?.[1] as string[];
+    expect(argv).toContain("StrictHostKeyChecking=yes");
+    expect(argv).toContain("HostKeyAlias=trusted-machine");
+    expect(argv).toContain("BatchMode=yes");
+    expect(argv.at(-1)).toBe("true");
+    expect(argv.slice(0, -1)).toEqual(result.argv);
+  });
+  test("failure and later re-probe reflect disconnection without replay", async () => {
+    let calls = 0;
+    const runner = async () => ({ exitCode: ++calls === 1 ? 0 : 255 });
+    expect((await probeUuMappedSsh(opts, runner)).status).toBe("healthy");
+    expect((await probeUuMappedSsh(opts, runner)).status).toBe("failed");
+    expect(calls).toBe(2);
+    expect((await probeUuMappedSsh(opts, async () => { throw new Error("secret"); })).status).toBe("failed");
+  });
+  test("rejects invalid settings before invoking ssh", async () => {
+    let count = 0;
+    const runner = async () => { count++; return { exitCode: 0 }; };
+    for (const input of [{ ...opts, localPort: 0 }, { ...opts, timeoutMs: 0 },
+      { ...opts, access: { ...opts.access, hostKeyAlias: "-o ProxyCommand=evil" } }]) {
+      await expect(probeUuMappedSsh(input, runner)).rejects.toThrow();
+    }
+    expect(count).toBe(0);
+  });
+});
+
+
+describe("optional experimental viewer checks", () => {
+  test("installation check uses a harmless bounded help command", async () => {
+    const calls: unknown[][] = [];
+    expect(await probeUuViewerInstallation(async (...args) => { calls.push(args); return { exitCode: 0 }; })).toBe("available");
+    expect(calls).toEqual([["uuremote-viewer", ["--help"], 5000]]);
+    expect(await probeUuViewerInstallation(async () => { throw Error("private"); })).toBe("unavailable");
+    expect(await probeUuViewerInstallation(async () => ({ exitCode: 1 }))).toBe("unavailable");
+  });
+  test("account success is opt-in and failure is unknown, never logged-out", async () => {
+    const calls: unknown[][] = [];
+    expect(await probeUuViewerAccount(async (...args) => { calls.push(args); return { exitCode: 0 }; })).toBe("accepted");
+    expect(calls).toEqual([["uuremote-viewer", ["devices", "GET", "/data/my_binded_devices", "/device_id", "/alias"], 15000]]);
+    expect(await probeUuViewerAccount(async () => ({ exitCode: 2 }))).toBe("unknown");
+    expect(await probeUuViewerAccount(async () => { throw Error("private"); })).toBe("unknown");
   });
 });

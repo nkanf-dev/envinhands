@@ -1,6 +1,6 @@
 /** Durable server-side boundary for API mutations, not an OS-wide monitor. */
 import { createHash, randomUUID } from "node:crypto";
-import { createChangeStore } from "./change-store.ts";
+import { ChangeStoreError, createChangeStore } from "./change-store.ts";
 import { parseRegistration, type AgentRegistrationInput } from "./change-model.ts";
 import { bearerAuth, response, bodyBytes } from "./http.ts";
 
@@ -30,8 +30,13 @@ export function createMutationAudit(options: {dbPath: string; token: string; mac
           registration = service; operationId = randomUUID();
         }
         if (JSON.stringify(registration).includes(options.token)) throw new Error();
-        store.register(registration);
       } catch { return response(400, {error: "Invalid mutation attribution"}); }
+      try {
+        store.register(registration);
+      } catch (error) {
+        if (error instanceof ChangeStoreError && error.status === 409) return response(400, {error: "Invalid mutation attribution"});
+        return response(503, {error: "Mutation attribution persistence failed or is uncertain; this attempt was not dispatched; check any prior operation with unknown outcome before retry"});
+      }
       // Anonymous legacy callers share a service identity, so they can never
       // reuse an attribution-specific audit binding.
       const isHeartbeat = !!encoded && !!heartbeat && request.method === "POST" && url.pathname === "/v1/native-mesh/agents";

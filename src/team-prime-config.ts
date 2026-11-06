@@ -6,8 +6,9 @@ import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
-export interface TeamPrimeConfig { url: string; token: string; machineId: string }
-export interface TeamPrimeInput { url: string; token: string; machineId?: string }
+export interface TeamPrimeRelay { url: string; secret: string }
+export interface TeamPrimeConfig { url: string; token: string; machineId: string; relay?: TeamPrimeRelay }
+export interface TeamPrimeInput { url: string; token: string; machineId?: string; relay?: TeamPrimeRelay }
 export interface TeamPrimeOptions { home?: string; replace?: boolean; detectedHostname?: string; platform?: NodeJS.Platform; windowsRunner?: WindowsRunner; testHooks?: { beforeTempWrite?: () => void | Promise<void> } }
 export type WindowsRunner = (operation: "read" | "write", home: string, config?: TeamPrimeConfig, replace?: boolean) => string;
 export interface TeamPrimeResult { status: "created" | "unchanged" | "replaced"; path: string; diagnostics: TeamPrimeDiagnostics }
@@ -27,7 +28,20 @@ export function validateTeamPrimeConfig(input: TeamPrimeInput, detectedHostname 
   if (typeof input.token !== "string" || input.token.length > 8192 || !/^[A-Za-z0-9._~+\/-]+=*$/.test(input.token)) throw invalid("token");
   const machineId = input.machineId ?? detectedHostname;
   if (typeof machineId !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(machineId)) throw invalid("machineId; supply the registered node ID explicitly");
-  return { url: url.origin, token: input.token, machineId };
+  let relay: TeamPrimeRelay | undefined;
+  if (input.relay !== undefined) {
+    if (!input.relay || typeof input.relay !== "object") throw invalid("relay");
+    let relayUrl: URL;
+    if (typeof input.relay.url !== "string" || /[?#\x00-\x20\x7f]/.test(input.relay.url) || /^[a-z][a-z0-9+.-]*:\/\/[^/]*@/i.test(input.relay.url)) throw invalid("relay url");
+    try { relayUrl = new URL(input.relay.url); } catch { throw invalid("relay url"); }
+    if ((relayUrl.protocol !== "wss:" && !(relayUrl.protocol === "ws:" && ["127.0.0.1", "localhost", "[::1]"].includes(relayUrl.hostname))) || relayUrl.username || relayUrl.password || relayUrl.search || relayUrl.hash) throw invalid("relay url");
+    const secret = input.relay.secret;
+    if (typeof secret !== "string" || !secret.trim() || secret.length > 8192 || /[\x00-\x1f\x7f]/.test(secret)) throw invalid("relay secret");
+    relay = { url: relayUrl.toString(), secret };
+  }
+  const result = { url: url.origin, token: input.token, machineId, ...(relay ? { relay } : {}) };
+  if (Buffer.byteLength(JSON.stringify(result) + "\n") > 16384) throw invalid("configuration size");
+  return result;
 }
 export function teamPrimeDiagnostics(url: string, checkSsh: () => boolean = () => {
   const p = spawnSync("ssh", ["-V"], { shell: false, timeout: 3000, stdio: "ignore", windowsHide: true });
@@ -73,11 +87,20 @@ async function readPosix(path: string): Promise<TeamPrimeConfig | null> {
     return validateTeamPrimeConfig(obj, "");
   } finally { await file.close(); }
 }
-function equal(a: TeamPrimeConfig | null, b: TeamPrimeConfig): boolean { return !!a && a.url === b.url && a.token === b.token && a.machineId === b.machineId; }
+function sameControl(a: TeamPrimeConfig, b: TeamPrimeConfig): boolean { return a.url === b.url && a.token === b.token && a.machineId === b.machineId; }
+function sameRelay(a?: TeamPrimeRelay, b?: TeamPrimeRelay): boolean { return (!a && !b) || (!!a && !!b && a.url === b.url && a.secret === b.secret); }
+function merge(old: TeamPrimeConfig | null, requested: TeamPrimeConfig, replace: boolean): { config: TeamPrimeConfig; status: TeamPrimeResult["status"] } {
+  if (!old) return { config: requested, status: "created" };
+  const config = { ...requested, relay: requested.relay ?? (sameControl(old, requested) ? old.relay : undefined) };
+  if (sameControl(old, config) && sameRelay(old.relay, config.relay)) return { config, status: "unchanged" };
+  if (!replace && (!sameControl(old, config) || (!!old.relay && !sameRelay(old.relay, config.relay)))) throw existing();
+  return { config, status: "replaced" };
+}
 
 /** Windows runner: Windows PowerShell 5.1/.NET Framework; script is static, secret travels only over stdin. */
 const WINDOWS_SCRIPT = String.raw`
 $ErrorActionPreference='Stop'
+$lock=$null; $lockPath=$null
 try {
  $i=[Console]::In.ReadToEnd() | ConvertFrom-Json
  $home=[System.IO.Path]::GetFullPath([string]$i.home); $dir=[System.IO.Path]::Combine($home,'.prime-team'); $target=[System.IO.Path]::Combine($dir,'envinhands-mesh.json')
@@ -98,21 +121,30 @@ try {
  CheckPath $home
  if(-not [IO.Directory]::Exists($dir)) { if($i.operation -ne 'write') { [Console]::Out.Write('missing'); exit 0 }; [IO.Directory]::CreateDirectory($dir,(Security $true)) | Out-Null }
  CheckPath $dir; CheckAcl $dir
+ if($i.operation -eq 'write') {
+  $lockPath=[IO.Path]::Combine($dir,'.envinhands-mesh.lock')
+  try { $lock=New-Object IO.FileStream($lockPath,[IO.FileMode]::CreateNew,[System.Security.AccessControl.FileSystemRights]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::None,(Security $false)) } catch { if([IO.File]::Exists($lockPath) -or [IO.Directory]::Exists($lockPath)) { [Console]::Out.Write('locked'); exit 0 }; throw }
+ }
  if([IO.File]::Exists($target)) {
   CheckPath $target; CheckAcl $target
   $f=[IO.File]::Open($target,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
   try { if($f.Length -gt 16384) { throw 'size' }; $reader=New-Object IO.StreamReader($f,[Text.Encoding]::UTF8); $old=$reader.ReadToEnd() | ConvertFrom-Json } finally { $f.Dispose() }
-  if($i.operation -eq 'read') { [Console]::Out.Write(($old | ConvertTo-Json -Compress)); exit 0 }
-  if($old.url -ceq $i.config.url -and $old.token -ceq $i.config.token -and $old.machineId -ceq $i.config.machineId) { [Console]::Out.Write('unchanged'); exit 0 }
-  if(-not $i.replace) { [Console]::Out.Write('exists'); exit 0 }; $existed=$true
+  if($i.operation -eq 'read') { [Console]::Out.Write(($old | ConvertTo-Json -Depth 5 -Compress)); exit 0 }
+  if(-not ($old.url -is [string]) -or -not ($old.token -is [string]) -or -not ($old.machineId -is [string])) { throw 'invalid old' }
+  if($null -ne $old.relay -and (-not ($old.relay.url -is [string]) -or -not ($old.relay.secret -is [string]) -or -not $old.relay.url -or -not $old.relay.secret)) { throw 'invalid old relay' }
+  $sameControl=$old.url -ceq $i.config.url -and $old.token -ceq $i.config.token -and $old.machineId -ceq $i.config.machineId
+  if($sameControl -and $null -eq $i.config.relay -and $null -ne $old.relay) { $i.config | Add-Member -NotePropertyName relay -NotePropertyValue $old.relay -Force }
+  $sameRelay=($null -eq $old.relay -and $null -eq $i.config.relay) -or ($null -ne $old.relay -and $null -ne $i.config.relay -and $old.relay.url -ceq $i.config.relay.url -and $old.relay.secret -ceq $i.config.relay.secret)
+  if($sameControl -and $sameRelay) { [Console]::Out.Write('unchanged'); exit 0 }
+  if(-not $i.replace -and (-not $sameControl -or ($null -ne $old.relay -and -not $sameRelay))) { [Console]::Out.Write('exists'); exit 0 }; $existed=$true
  } else { if($i.operation -eq 'read') { [Console]::Out.Write('missing'); exit 0 }; $existed=$false }
  $tmp=[IO.Path]::Combine($dir,'.envinhands-'+[Guid]::NewGuid().ToString('N')+'.tmp')
  try {
   $s=New-Object IO.FileStream($tmp,[IO.FileMode]::CreateNew,[System.Security.AccessControl.FileSystemRights]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough,(Security $false))
-  try { $b=[Text.Encoding]::UTF8.GetBytes(($i.config | ConvertTo-Json -Compress)); $s.Write($b,0,$b.Length); $s.Flush($true) } finally { $s.Dispose() }
+  try { $b=[Text.Encoding]::UTF8.GetBytes(($i.config | ConvertTo-Json -Depth 5 -Compress)); $s.Write($b,0,$b.Length); $s.Flush($true) } finally { $s.Dispose() }
   if($existed) { [IO.File]::Replace($tmp,$target,$null); [Console]::Out.Write('replaced') } else { [IO.File]::Move($tmp,$target); [Console]::Out.Write('created') }
  } finally { if([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp) } }
-} catch { [Console]::Out.Write('error'); exit 1 }
+} catch { [Console]::Out.Write('error'); exit 1 } finally { if($null -ne $lock) { $lock.Dispose(); [IO.File]::Delete($lockPath) } }
 `;
 function defaultWindowsRunner(operation: "read" | "write", home: string, config?: TeamPrimeConfig, replace?: boolean): string {
   const encoded = Buffer.from(WINDOWS_SCRIPT, "utf16le").toString("base64");
@@ -143,26 +175,29 @@ export async function writeTeamPrimeConfig(input: TeamPrimeInput, options: TeamP
     let result: string;
     try { result = (options.windowsRunner ?? defaultWindowsRunner)("write", home, config, options.replace === true); } catch { throw failure(); }
     if (result === "exists") throw existing();
+    if (result === "locked") throw new TeamPrimeConfigError("Team configuration is locked; retry later or inspect a stale lock after a crash.");
     if (result !== "created" && result !== "replaced" && result !== "unchanged") throw failure();
     status = result;
   } else {
-    let temp: string | undefined;
+    let temp: string | undefined, lock: string | undefined;
     try {
-      const dir = await checkDirectory(home, true); const old = await readPosix(target);
-      if (equal(old, config)) status = "unchanged";
-      else {
-        if (old && options.replace !== true) throw existing();
+      const dir = await checkDirectory(home, true);
+      const lockPath = join(dir, ".envinhands-mesh.lock");
+      try { await fs.mkdir(lockPath, { mode: 0o700 }); lock = lockPath; } catch (e) { if ((e as NodeJS.ErrnoException).code === "EEXIST") throw new TeamPrimeConfigError("Team configuration is locked; retry later or inspect a stale lock after a crash."); throw e; }
+      const { config: effective, status: nextStatus } = merge(await readPosix(target), config, options.replace === true);
+      status = nextStatus;
+      if (status !== "unchanged") {
         temp = join(dir, `.envinhands-${randomBytes(16).toString("hex")}.tmp`);
         const handle = await fs.open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-        try { await handle.chmod(0o600); await options.testHooks?.beforeTempWrite?.(); await handle.writeFile(JSON.stringify(config) + "\n", "utf8"); await handle.sync(); } finally { await handle.close(); }
-        if (old && options.replace === true) { await fs.rename(temp, target); status = "replaced"; }
-        else { await fs.link(temp, target); status = "created"; }
+        try { await handle.chmod(0o600); await options.testHooks?.beforeTempWrite?.(); await handle.writeFile(JSON.stringify(effective) + "\n", "utf8"); await handle.sync(); } finally { await handle.close(); }
+        if (status === "replaced") await fs.rename(temp, target);
+        else await fs.link(temp, target);
       }
     } catch (e) {
-      if (e instanceof TeamPrimeConfigError && e.message.includes("already exists")) throw e;
+      if (e instanceof TeamPrimeConfigError && (e.message.includes("already exists") || e.message.includes("configuration is locked"))) throw e;
       if ((e as NodeJS.ErrnoException).code === "EEXIST") throw existing();
       throw failure();
-    } finally { if (temp) { try { await fs.unlink(temp); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw failure(); } } }
+    } finally { try { if (temp) { try { await fs.unlink(temp); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw failure(); } } } finally { if (lock) { try { await fs.rmdir(lock); } catch { throw failure(); } } } }
   }
   return { status, path: target, diagnostics: teamPrimeDiagnostics(config.url) };
 }

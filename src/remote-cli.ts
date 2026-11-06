@@ -52,14 +52,22 @@ export async function runRemoteCli(args: string[], env: NodeJS.ProcessEnv, io: P
       if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [markSecrets(k), redact(v)]));
       return value;
     };
-    const rendered = JSON.stringify(redact({ untrusted: true, result })) + "\n";
-    // Even JSON syntax or a non-string literal could match a very short secret.
-    // Fail closed rather than emit it; the audit remains available locally.
-    if (secrets.some(secret => rendered.includes(secret))) throw new Error();
-    io.write(rendered);
-    return result.outcome === "success" && result.locallyRecorded ? 0 : 1;
+    const ok = result.outcome === "success" && result.locallyRecorded;
+    const error = {type:"execution", code:"E_EXECUTION", message:"E_EXECUTION"};
+    // Keep top-level result for existing JSON consumers. data is the same
+    // object in the structured CLI envelope.
+    const envelope = ok ? {ok, data:result, meta:{}, result} : {ok, error, data:result, meta:{}, result};
+    const rendered = JSON.stringify(redact(envelope)) + "\n";
+    // A fixed error field must never be altered to hide a secret. If even JSON
+    // syntax or a fixed literal conflicts with one, suppress the output.
+    const errorLiteral = JSON.stringify(error);
+    if ((!ok && secrets.some(secret => errorLiteral.includes(secret))) || secrets.some(secret => rendered.includes(secret))) throw new Error();
+    if (ok) io.write(rendered); else io.error(rendered);
+    return ok ? 0 : 1;
   } catch {
-    io.error(conceal("Execution result is unavailable or invalid. Inspect local audit state; never blindly rerun an uncertain command.\n"));
+    const failure = JSON.stringify({ok:false, error:{type:"execution", code:"E_EXECUTION", message:"E_EXECUTION"}}) + "\n";
+    // Silence is safer than printing a secret or a mutated fixed error code.
+    if (!secrets.some(secret => failure.includes(secret))) io.error(failure);
     return 1;
   }
 }
@@ -129,7 +137,7 @@ async function runCatalogExecution(value: Record<string, any>, env: NodeJS.Proce
       // many direct candidates are slow or process startup has overhead.
       const directDeadline = routes.some(r => r.relay) ?
         performance.now() + Math.max(0, deadline - performance.now()) * 2 / 3 : deadline;
-      // A probe runs only the fixed `true` command. One short second sweep
+      // A probe runs only the fixed echo command. One short second sweep
       // allows a path that is still coming up to become ready. The user task
       // itself is never retried.
       for (let sweep = 0; sweep < 2 && routes.length; sweep++) {
@@ -159,8 +167,5 @@ async function runCatalogExecution(value: Record<string, any>, env: NodeJS.Proce
       throw new Error("No verified route");
     },
   });
-  const guidance = diagnostics.status === "selected" ?
-    "The command was dispatched at most once. If its outcome is unknown, inspect the target and audit before taking further action." :
-    "No task command was dispatched. Check the catalog, SSH identity, trusted host key and route connectivity before submitting a new operation.";
-  return {...result, diagnostics: {...diagnostics, guidance}};
+  return {...result, diagnostics};
 }

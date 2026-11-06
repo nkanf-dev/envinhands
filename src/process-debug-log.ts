@@ -91,7 +91,9 @@ export function createProcessDebugLogger(component: string, secrets: readonly st
   error: (message: string) => void, platform: NodeJS.Platform = process.platform, announce = false): DebugLogger | undefined {
   let failures = 0;
   const fault = (category: string) => { failures++; error(`Logging fault (${category}); count=${failures}. Service continues without reliable debug records.`); };
-  if (platform === "win32") { fault("unsupported_windows_acl"); return; }
+  // Remain fail-closed until Windows ACL and no-reparse guarantees exist. Even a
+  // failing diagnostics sink must not stop the service on this fallback path.
+  if (platform === "win32") { try { fault("unsupported_windows_acl"); } catch {} return; }
   try {
     const base = env.ENVINHANDS_LOG_DIR ?? join(env.HOME || homedir(), ".local", "state", "envinhands");
     if (!isAbsolute(base)) { fault("configuration"); return; }

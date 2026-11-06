@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, chmodSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDebugLogger } from "../src/debug-log.ts";
+import { createProcessDebugLogger } from "../src/process-debug-log.ts";
 
 function fixture() { const root = mkdtempSync(join(tmpdir(), "env-log-test-")); return { root, dir: join(root, "logs"), clean: () => rmSync(root, { recursive: true, force: true }) }; }
 function records(dir: string) { return readdirSync(dir).sort().flatMap(n => readFileSync(join(dir, n), "utf8").trim().split("\n").filter(Boolean).map(s => JSON.parse(s))); }
@@ -62,4 +63,21 @@ describe("metadata JSONL logging", () => {
       expect(l.status().failures).toBe(1); expect(readFileSync(target, "utf8")).toBe("untouched");
     } finally { f.clean(); }
   });
+});
+
+// A platform override checks only fail-closed behavior on local temporary data.
+// It is not evidence of Windows ACL or reparse-point support.
+test("Windows logging fails closed without touching disk or exposing secrets", () => {
+  const f = fixture(); try {
+    const messages: string[] = [];
+    const env = { ENVINHANDS_LOG_DIR: f.dir };
+    const result = createProcessDebugLogger("node", ["private-token"], env, message => messages.push(message), "win32", true);
+    expect(result).toBeUndefined();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain("unsupported_windows_acl");
+    expect(messages[0]).not.toContain("private-token");
+    expect(readdirSync(f.root)).toEqual([]);
+    expect(() => createProcessDebugLogger("relay", ["private-token"], env, () => { throw Error("sink failed"); }, "win32")).not.toThrow();
+    expect(readdirSync(f.root)).toEqual([]);
+  } finally { f.clean(); }
 });

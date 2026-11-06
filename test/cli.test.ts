@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import { runCli as actualRunCli, reapDebugLogs, debugLogWriterName, type CliDependencies } from "../src/cli.ts";
 import { startAgentBusServer } from "../src/server.ts";
 import { createRelayServer } from "../src/relay.ts";
+import { writeTeamPrimeConfig } from "../src/team-prime-config.ts";
+import { createHash } from "node:crypto";
 
 const testLogs = mkdtempSync(join(tmpdir(), "env-cli-logs-"));
 afterAll(() => rmSync(testLogs, { recursive: true, force: true }));
 function runCli(args: string[], env: NodeJS.ProcessEnv, deps: Partial<CliDependencies> = {}) {
-  return actualRunCli(args, ["server", "node", "relay"].includes(args[0] ?? "") ? { ENVINHANDS_LOG_DIR: testLogs, ...env } : env, deps);
+  return actualRunCli(args, ["server", "node", "relay"].includes(args[0] ?? "") ? { ENVINHANDS_LOG_DIR: testLogs, ...(args[0] === "node" ? { ENVINHANDS_TEAM_AUTO_KEYS: "0" } : {}), ...env } : env, deps);
 }
 
 function context() {
@@ -41,7 +43,7 @@ describe("CLI validation and isolation", () => {
     expect(await runCli(["--help"], {}, c)).toBe(0);
     expect(c.output()).toContain("wss://");
     expect(c.output()).toContain("stdout carries SSH bytes only");
-    expect(c.output()).toContain("does not configure SSH keys");
+    expect(c.output()).toContain("does not configure sudo");
   });
   test("proxy passes environment settings and hides errors, never writes stdout", async () => {
     const c = context();
@@ -432,4 +434,230 @@ test("real node publishes relay and direct observations to the signed control se
     expect(routes.some(x=>x.kind==="relay" && x.relayNodeId==="route-node" && x.status==="observed")).toBe(true);
     expect(routes.every(x=>x.controller.startsWith("node-"))).toBe(true);
   } finally {c.signals.emit("SIGTERM"); await task; await control.stop(); relay.stop(); rmSync(dir,{recursive:true,force:true});}
+});
+
+
+describe("node team auto onboarding", () => {
+  const env = { ENVINHANDS_RELAY_URL: "wss://relay.example", ENVINHANDS_RELAY_SECRET: "relay-secret-private", ENVINHANDS_URL: "https://control.example", ENVINHANDS_TOKEN: "token-private", ENVINHANDS_TEAM_AUTO_KEYS: "1" };
+  function runtime(events: string[]): CliDependencies["startNode"] {
+    return () => { events.push("runtime-start"); let finish!: () => void; const finished = new Promise<void>(r => { finish = r; });
+      return {ready: Promise.resolve(), finished, close() { events.push("runtime-close"); finish(); }}; };
+  }
+  function advertiser(events: string[]): CliDependencies["startRouteAdvertiser"] {
+    return () => ({ stop() { events.push("advertiser-stop"); }, setRelayConnected() {}, refresh() {} });
+  }
+  test("starts once with the route actor and closes runtime before awaiting onboarding then advertiser", async () => {
+    const c = context(), events: string[] = []; let opts!: Parameters<CliDependencies["createTeamNodeOnboard"]>[0];
+    let done!: () => void; const stopDone = new Promise<void>(r => { done = r; });
+    const createTeamNodeOnboard: CliDependencies["createTeamNodeOnboard"] = o => { opts = o; return {
+      sshPaths: () => ({privateKeyPath:"", knownHostsPath:"",hostKeyAlias:""}),
+      start() { events.push("onboard-start"); }, async stop() { events.push("onboard-stop"); await stopDone; events.push("onboard-stopped"); }
+    }; };
+    const task = runCli(["node", "n"], env, {...c, platform:"linux", currentUserHome:()=>"/isolated", startNode: runtime(events), startRouteAdvertiser: advertiser(events), createTeamNodeOnboard});
+    expect(events).toEqual(["runtime-start", "onboard-start"]); expect(opts.home).toBe("/isolated"); expect(opts.deviceId).toBe("n");
+    expect(opts.hostPublicKeyPath).toBe("/etc/ssh/ssh_host_ed25519_key.pub"); expect(opts.fullTeamTrust).toBe(true);
+    expect(opts.registration.machineId).toBe("n"); expect(opts.registration.agentId).toMatch(/^node-[0-9a-f]{64}$/);
+    expect(opts.registration.signature).toBe("EnvInHands node route observer");
+    c.signals.emit("SIGTERM"); await Promise.resolve(); await Promise.resolve();
+    expect(events).toEqual(["runtime-start", "onboard-start", "runtime-close", "onboard-stop"]);
+    done(); expect(await task).toBe(0); expect(events.slice(-2)).toEqual(["onboard-stopped", "advertiser-stop"]);
+    expect(c.output()).not.toContain("token-private"); expect(c.output()).not.toContain("relay-secret-private");
+  });
+  test("disabled and Windows never call onboarding; Windows says unsupported", async () => {
+    for (const [platform, extra, expected] of [["linux", {ENVINHANDS_TEAM_AUTO_KEYS:"0"}, false], ["win32", {}, true]] as const) {
+      const c=context(), events:string[]=[]; let called=0;
+      const task=runCli(["node","n"], {...env,...extra}, {...c, platform, startNode:runtime(events), startRouteAdvertiser:advertiser(events), createTeamNodeOnboard:()=>{called++; throw new Error();}});
+      c.signals.emit("SIGTERM"); expect(await task).toBe(0); expect(called).toBe(0); expect(c.output().includes("unsupported")).toBe(expected);
+    }
+  });
+  test("onboarding setup failures and unsafe host path do not stop relay or expose secrets", async () => {
+    for (const host of ["/safe/host.pub", "../bad"]) {
+      const c=context(), events:string[]=[]; let called=0;
+      const task=runCli(["node","n"], {...env, ENVINHANDS_SSH_HOST_PUBLIC_KEY:host}, {...c, platform:"linux", currentUserHome:()=>"/isolated", startNode:runtime(events), startRouteAdvertiser:advertiser(events), createTeamNodeOnboard:()=>{called++; throw new Error("token-private");}});
+      expect(events).toContain("runtime-start"); expect(c.output()).toContain("E_TEAM_SYNC"); expect(c.output()).not.toContain("token-private");
+      expect(called).toBe(host.startsWith("/") ? 1 : 0); c.signals.emit("SIGINT"); expect(await task).toBe(0);
+    }
+  });
+});
+
+
+test("node CLI runs real relay and onboarding against an isolated loopback directory", async () => {
+  if (process.platform !== "linux" && process.platform !== "darwin") return;
+  const { createTeamIdentitiesApi } = await import("../src/team-identities.ts");
+  const { createTeamNodeOnboard } = await import("../src/team-node-onboard.ts");
+  const dir=mkdtempSync(join(tmpdir(),"env-cli-team-"));
+  const key=join(dir,"host");
+  const keygen=Bun.spawn(["/usr/bin/ssh-keygen","-q","-t","ed25519","-N","","-f",key],{stdin:"ignore",stdout:"ignore",stderr:"ignore"});
+  expect(await keygen.exited).toBe(0);
+  const api=createTeamIdentitiesApi({dbPath:join(dir,"test.sqlite"),token:"private-team-token"});
+  const server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:api.fetch});
+  const relay=createRelayServer({hostname:"127.0.0.1",port:0,secret:"private-relay-token"});
+  const c=context(); let synced!:()=>void, registered!:()=>void;
+  const synchronization=new Promise<void>(r=>{synced=r;}); const registration=new Promise<void>(r=>{registered=r;});
+  const task=runCli(["node","node-fixture"], {ENVINHANDS_TEAM_AUTO_KEYS:"1", ENVINHANDS_RELAY_URL:`ws://127.0.0.1:${relay.port}`, ENVINHANDS_RELAY_SECRET:"private-relay-token", ENVINHANDS_URL:`http://127.0.0.1:${server.port}`, ENVINHANDS_TOKEN:"private-team-token", ENVINHANDS_SSH_HOST_PUBLIC_KEY:key+".pub"}, {
+    ...c, currentUserHome:()=>dir,
+    startNode: opts => { const inst = require("../src/node-runtime.ts").startNodeRuntime(opts); void inst.ready.then(registered,()=>{}); return inst; },
+    createTeamNodeOnboard: opts => createTeamNodeOnboard({...opts, onStatus: status=>{opts.onStatus?.(status);if(status.code==="synchronized")synced();}}),
+  });
+  try {
+    await Promise.race([Promise.all([synchronization,registration]), new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error("fixture timeout")),15000))]);
+    const privateKey=readFileSync(join(dir,".envinhands-team","client_ed25519"),"utf8");
+    expect(readFileSync(join(dir,".envinhands-team","known_hosts"),"utf8")).toContain("node-fixture ssh-ed25519");
+    expect(readFileSync(join(dir,".ssh","authorized_keys"),"utf8")).toContain("ssh-ed25519");
+    expect(c.output()).not.toContain(privateKey); expect(c.output()).not.toContain("private-team-token"); expect(c.output()).not.toContain("private-relay-token");
+  } finally {c.signals.emit("SIGTERM"); await task; relay.stop(); server.stop(true); api.close(); rmSync(dir,{recursive:true,force:true});}
+}, 20000);
+
+describe("Team defaults at the CLI boundary", () => {
+  test("resource commands use private defaults but explicit pairs win and partial pairs never mix", async () => {
+    const home = mkdtempSync(join(tmpdir(), "env-cli-team-"));
+    try {
+      await writeTeamPrimeConfig({url:"https://team.example", token:"team-secret-xyz", machineId:"workstation"}, {home});
+      const seen: {url:string; auth:string|null}[] = [];
+      const c = context();
+      const deps = {...c, stdout:{write(_:string) {}}, fetch: async (input: string | URL | Request, init?: RequestInit) => {
+        seen.push({url:String(input), auth:new Headers(init?.headers).get("authorization")});
+        return Response.json({agents:[]});
+      }};
+      await runCli(["collaborate", "agents"], {HOME:home}, deps);
+      expect(seen[0]?.url).toContain("https://team.example/");
+      expect(seen[0]?.auth).toBe("Bearer team-secret-xyz");
+      seen.length = 0;
+      await runCli(["collaborate", "agents"], {HOME:home, ENVINHANDS_URL:"https://other.example", ENVINHANDS_TOKEN:"explicit-secret"}, deps);
+      expect(seen[0]?.url).toContain("https://other.example/");
+      expect(seen[0]?.auth).toBe("Bearer explicit-secret");
+      seen.length = 0;
+      expect(await runCli(["collaborate", "agents"], {HOME:home, ENVINHANDS_URL:"https://other.example"}, deps)).toBe(1);
+      expect(seen).toHaveLength(0);
+      expect(c.output()).toContain("E_TEAM_CONFIG_PARTIAL");
+      expect(c.output()).not.toContain("team-secret-xyz");
+      seen.length = 0;
+      expect(await runCli(["collaborate", "agents"], {}, deps)).toBe(1);
+      expect(seen).toHaveLength(0);
+    } finally { rmSync(home, {recursive:true, force:true}); }
+  });
+
+  test("connect uses private SSH paths and resolves optional user with authenticated identities", async () => {
+    const home = mkdtempSync(join(tmpdir(), "env-cli-connect-"));
+    try {
+      await writeTeamPrimeConfig({url:"https://team.example", token:"team-secret-xyz", machineId:"workstation"}, {home});
+      const dir=join(home,".envinhands-team"); mkdirSync(dir, {mode:0o700});
+      writeFileSync(join(dir,"client_ed25519"), "private-key", {mode:0o600});
+      writeFileSync(join(dir,"known_hosts"), "# envinhands-snapshot 1\n", {mode:0o600});
+      const keyBytes=Buffer.concat([Buffer.from([0,0,0,11]), Buffer.from("ssh-ed25519"), Buffer.from([0,0,0,32]), Buffer.alloc(32, 1)]);
+      const key="ssh-ed25519 "+keyBytes.toString("base64");
+      const fingerprint="SHA256:"+createHash("sha256").update(keyBytes).digest("base64").replace(/=+$/, "");
+      const record={deviceId:"target",os:"linux",user:"alice",publicKey:key,hostKey:key,publicKeyFingerprint:fingerprint,hostKeyFingerprint:fingerprint,revision:1};
+      const seen: {url:string; auth:string|null}[]=[];
+      const c=context();
+      const deps={...c, stdinIsTTY:true, stdoutIsTTY:true, fetch:async (input:string | URL | Request, init?:RequestInit) => {
+        seen.push({url:String(input),auth:new Headers(init?.headers).get("authorization")});
+        return String(input).includes("/v1/team-identities") ? Response.json({record,revision:1}) : new Response("",{status:503});
+      }};
+      expect(await runCli(["connect", "target"], {HOME:home}, deps)).toBe(1);
+      expect(seen).toHaveLength(2);
+      expect(seen[0]!.url).toContain("/v1/team-identities?deviceId=target");
+      expect(seen[0]!.auth).toBe("Bearer team-secret-xyz");
+      expect(seen[1]!.url).toContain("transport");
+      expect(c.output()).not.toContain("Team SSH files are missing");
+      seen.length=0;
+      await runCli(["connect", "target", "bob"], {HOME:home}, deps);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.url).toContain("transport");
+      seen.length=0;
+      await runCli(["connect", "target", "-bad"], {HOME:home}, deps);
+      expect(seen).toHaveLength(0);
+      expect(c.output()).not.toContain("team-secret-xyz");
+      expect(c.signals.listenerCount("SIGTERM")).toBe(0);
+    } finally { rmSync(home, {recursive:true, force:true}); }
+  });
+});
+
+test("connect relay binary defaults and TTY gate", async () => {
+  const env={ENVINHANDS_URL:"https://team.example", ENVINHANDS_TOKEN:"secret-value", ENVINHANDS_RELAY_URL:"wss://relay.example", ENVINHANDS_RELAY_SECRET:"relay-secret", ENVINHANDS_SSH_IDENTITY:"/tmp/key", ENVINHANDS_SSH_KNOWN_HOSTS:"/tmp/known"};
+  let requests=0;
+  const fetcher=async () => { requests++; return new Response("",{status:503}); };
+  const noTty=context();
+  expect(await runCli(["connect","target"], env, {...noTty,fetch:fetcher,stdinIsTTY:false,stdoutIsTTY:false})).toBe(2);
+  expect(requests).toBe(0);
+  const source=context();
+  await runCli(["connect","target","alice"], env, {...source,fetch:fetcher,stdinIsTTY:true,stdoutIsTTY:true,compiled:false,platform:"linux"});
+  expect(source.output()).toContain("ENVINHANDS_PROXY_BINARY");
+  const compiled=context();
+  await runCli(["connect","target","alice"], env, {...compiled,fetch:fetcher,stdinIsTTY:true,stdoutIsTTY:true,compiled:true,execPath:"/opt/envinhands",platform:"linux"});
+  expect(compiled.output()).not.toContain("ENVINHANDS_PROXY_BINARY");
+  const unsafe=context();
+  await runCli(["connect","target","alice"], env, {...unsafe,fetch:fetcher,stdinIsTTY:true,stdoutIsTTY:true,compiled:true,execPath:"/bad/%path",platform:"linux"});
+  expect(unsafe.output()).toContain("ENVINHANDS_PROXY_BINARY");
+});
+
+
+test("node defaults to onboarding on macOS and preserves relay on worker errors", async () => {
+  const c=context(); let finish!:()=>void, closes=0, starts=0, stops=0;
+  const finished=new Promise<void>(r=>{finish=r;});
+  const task=actualRunCli(["node","mac-node"], {ENVINHANDS_LOG_DIR:testLogs, ENVINHANDS_RELAY_URL:"wss://relay.example", ENVINHANDS_RELAY_SECRET:"relay-secret", ENVINHANDS_URL:"https://control.example", ENVINHANDS_TOKEN:"control-secret"}, {
+    ...c, platform:"darwin", currentUserHome:()=>"/isolated", startRouteAdvertiser:()=>({setRelayConnected(){},refresh(){},stop(){}}),
+    startNode:()=>({ready:Promise.resolve(),finished,close(){closes++;finish();}}),
+    createTeamNodeOnboard:opts=>{
+      expect(opts.hostPublicKeyPath).toBe("/private/etc/ssh/ssh_host_ed25519_key.pub");
+      return {sshPaths:()=>({privateKeyPath:"",knownHostsPath:"",hostKeyAlias:""}),start(){starts++;opts.onStatus?.({code:"retry",message:"control-secret",ready:false});},async stop(){stops++;}};
+    },
+  });
+  expect(starts).toBe(1); expect(closes).toBe(0); expect(c.output()).toContain("E_TEAM_SYNC: synchronization incomplete; retrying."); expect(c.output()).not.toContain("control-secret");
+  c.signals.emit("SIGTERM"); expect(await task).toBe(0); expect(closes).toBe(1); expect(stops).toBe(1);
+});
+
+
+test("connect stops when the machine is absent from Team identities", async () => {
+  const c=context(); let calls=0;
+  const env={ENVINHANDS_URL:"https://control.example",ENVINHANDS_TOKEN:"hidden-token", ENVINHANDS_SSH_IDENTITY:"/tmp/unused-private",ENVINHANDS_SSH_KNOWN_HOSTS:"/tmp/unused-known"};
+  const result=await runCli(["connect","missing"],env,{...c,stdinIsTTY:true,stdoutIsTTY:true,fetch:async ()=>{calls++;return Response.json({record:null,revision:null});}});
+  expect(result).toBe(1);expect(calls).toBe(1);expect(c.output()).toContain("E_SSH_USER");expect(c.output()).not.toContain("hidden-token");
+});
+
+
+test("connect directory timeout returns a safe actionable error", async () => {
+  const c=context();let signal:AbortSignal|undefined;
+  const env={ENVINHANDS_URL:"https://control.example",ENVINHANDS_TOKEN:"hidden-token",ENVINHANDS_SSH_IDENTITY:"/tmp/no-key",ENVINHANDS_SSH_KNOWN_HOSTS:"/tmp/no-hosts"};
+  const result=await runCli(["connect","target"],env,{...c,stdinIsTTY:true,stdoutIsTTY:true,requestTimeoutMs:10,fetch:async (_url,init)=>{signal=init?.signal??undefined;return new Promise<Response>(()=>{});}});
+  expect(result).toBe(1);expect(signal?.aborted).toBe(true);expect(c.output()).toContain("E_TEAM_DIRECTORY");expect(c.output()).not.toContain("hidden-token");
+});
+
+
+test("status and machines use Team defaults through the unified CLI", async () => {
+  const home = mkdtempSync(join(tmpdir(), "env-cli-status-"));
+  const auth: string[] = [];
+  const server = Bun.serve({hostname:"127.0.0.1", port:0, fetch(req) {
+    auth.push(req.headers.get("authorization") ?? "");
+    return Response.json({machines:[{id:"node-a",status:"ready",host:"127.0.0.1",sshPort:22,checkedAt:null}]});
+  }});
+  let stdout = "", stderr = "", requests = 0;
+  const deps: Partial<CliDependencies> = {
+    stdout:{write(text){stdout += text;}}, stderr:{write(text){stderr += text;}}, requestTimeoutMs:1000,
+    fetch: async (input, init) => { requests++; expect(init?.signal).toBeDefined(); return fetch(input, init); },
+  };
+  try {
+    await writeTeamPrimeConfig({url:`http://127.0.0.1:${server.port}`,token:"private-status-token",machineId:"local-node"}, {home});
+    expect(await runCli(["status"], {HOME:home}, deps)).toBe(0);
+    const result=JSON.parse(stdout); expect(result.ok).toBe(true); expect(result.data.command).toBe("status");
+    expect(result.data.localMachineId).toBe("local-node"); expect(result.data.machines[0].id).toBe("node-a");
+    expect(auth).toEqual(["Bearer private-status-token"]); expect(stderr).toBe("");
+    stdout="";
+    expect(await runCli(["machines","--format","table"], {HOME:home}, deps)).toBe(0);
+    expect(stdout).toContain("ID\tCATALOG\tSSH ENDPOINT"); expect(stdout).toContain("node-a\tready\t127.0.0.1:22");
+    expect(requests).toBe(2); expect(stdout + stderr).not.toContain("private-status-token");
+    stdout=""; stderr="";
+    expect(await runCli(["machines","--bad"], {HOME:home}, deps)).toBe(2);
+    expect(JSON.parse(stderr).error.code).toBe("USAGE"); expect(requests).toBe(2);
+  } finally { server.stop(true); rmSync(home,{recursive:true,force:true}); }
+});
+
+test("status uses injected request timeout and does not read the real home", async () => {
+  let stderr="", stdout="", observed:AbortSignal | null | undefined;
+  const code = await runCli(["status"], {ENVINHANDS_URL:"http://127.0.0.1:1", ENVINHANDS_TOKEN:"hidden-token"}, {
+    stderr:{write(text){stderr += text;}}, stdout:{write(text){stdout += text;}}, requestTimeoutMs:10,
+    fetch: async (_url, init) => {observed=init?.signal; return await new Promise<Response>(()=>{});},
+  });
+  expect(code).toBe(4); expect(JSON.parse(stderr).error.code).toBe("TIMEOUT"); expect(observed?.aborted).toBe(true);
+  expect(stdout).toBe(""); expect(stderr).not.toContain("hidden-token");
 });

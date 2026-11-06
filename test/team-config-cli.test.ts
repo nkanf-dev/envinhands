@@ -87,4 +87,23 @@ describe("team config CLI", () => {
     expect(redacted.stdout).not.toContain(secret); expect(redacted.stdout).toContain("[REDACTED]");
     expect(await fs.readdir(h)).toEqual([]);
   });
+  test("relay pair is required, safely merged, never printed and explicit replacement is enforced", async () => {
+    const h = await home(), relaySecret = "relay-sensitive-fictional", vars = { ...env, ENVINHANDS_RELAY_URL: "wss://relay.example/tunnel", ENVINHANDS_RELAY_SECRET: relaySecret };
+    expect((await cli([], env, { home: h })).code).toBe(0);
+    for (const partial of [{ ...env, ENVINHANDS_RELAY_URL: vars.ENVINHANDS_RELAY_URL }, { ...env, ENVINHANDS_RELAY_SECRET: relaySecret }]) {
+      const result = await cli([], partial, { home: h }); expect(result.code).toBe(2); expect(result.stderr).toContain("together"); expect(result.stderr).not.toContain(relaySecret);
+    }
+    const add = await cli([], vars, { home: h }); expect(add.code).toBe(0); expect(add.stdout + add.stderr).not.toContain(relaySecret);
+    expect((await readTeamPrimeConfig({ home: h }))?.relay).toEqual({ url: vars.ENVINHANDS_RELAY_URL, secret: relaySecret });
+    expect((await cli([], env, { home: h })).stdout).toContain("unchanged");
+    const changed = { ...vars, ENVINHANDS_RELAY_SECRET: "other-secret" };
+    expect((await cli([], changed, { home: h })).stderr).toContain("--replace");
+    expect((await cli(["--replace"], changed, { home: h })).code).toBe(0);
+    expect((await readTeamPrimeConfig({ home: h }))?.relay?.secret).toBe(changed.ENVINHANDS_RELAY_SECRET);
+    const bad = await cli([], { ...vars, ENVINHANDS_RELAY_URL: `wss://${relaySecret}@relay.example` }, { home: h });
+    expect(bad.code).toBe(1); expect(bad.stderr).toContain("Invalid ENVINHANDS_RELAY_URL"); expect(bad.stderr).not.toContain(relaySecret);
+    const inject: typeof writeTeamPrimeConfig = async () => ({ status: "created", path: `/mock/${relaySecret}`, diagnostics: { connectivity: "not-tested", tunnel: "not-inferred", ssh: "not-checked", message: relaySecret } });
+    const redacted = await cli([], vars, { home: h, write: inject }); expect(redacted.stdout).not.toContain(relaySecret); expect(redacted.stdout).toContain("[REDACTED]");
+  });
+
 });

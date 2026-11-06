@@ -78,7 +78,10 @@ test("catalog exec uses real HTTP and SSH, preserves host trust and never replay
         const payload = { registration, change: change(operationId), targetMachineId: "node-1", access, probeBudgetMs: 5000, command, timeoutMs: 5000, ...overrides };
         const rc = await runRemoteCli(["--catalog"], customEnv, { readInput: async () => JSON.stringify(payload), write: s => { output += s; }, error: s => { errors += s; } });
         assert.ok(!output.includes("catalog-secret") && !errors.includes("catalog-secret"));
-        return { rc, output, errors, result: output ? JSON.parse(output).result : undefined };
+        const envelope = output || errors ? JSON.parse(output || errors) : undefined;
+        if (rc === 0) { assert.equal(envelope.ok,true); assert.deepEqual(envelope.data,envelope.result); assert.deepEqual(envelope.meta,{}); }
+        else { assert.equal(output,""); assert.equal(envelope.ok,false); assert.deepEqual(envelope.error,{type:"execution",code:"E_EXECUTION",message:"E_EXECUTION"}); }
+        return { rc, output, errors, result: envelope?.result };
       };
       const success = await execute("op-success", `printf 'ok\\n' >> '${marker}'`);
       assert.equal(success.rc, 0, success.errors + success.output);
@@ -86,6 +89,7 @@ test("catalog exec uses real HTTP and SSH, preserves host trust and never replay
       assert.equal(success.result.routeId, "second");
       assert.equal(success.result.started, true);
       assert.equal(success.result.locallyRecorded, true);
+      assert.equal(Object.hasOwn(success.result.diagnostics, "guidance"), false);
       assert.equal(readFileSync(marker, "utf8"), "ok\n");
       const uncertain = await execute("op-uncertain", `printf 'once\\n' >> '${marker}'; exit 255`);
       assert.equal(uncertain.rc, 1);
@@ -189,7 +193,12 @@ test("catalog HTTP failures and forged routes fail closed after recording intent
       const rc = await runRemoteCli(["--catalog"], env, { readInput: async () => JSON.stringify(payload), write: s => { output += s; }, error: s => { error += s; } });
       assert.equal(rc, 1, error + output);
       assert.ok(Date.now() - start < 3000, "a stalled catalog must not hold the execution indefinitely");
-      const result = JSON.parse(output).result;
+      assert.equal(output, "");
+      const envelope = JSON.parse(error);
+      assert.equal(envelope.ok, false);
+      assert.deepEqual(envelope.error, {type:"execution",code:"E_EXECUTION",message:"E_EXECUTION"});
+      assert.deepEqual(envelope.data, envelope.result);
+      const result = envelope.result;
       assert.equal(result.outcome, "unknown");
       assert.equal(result.started, false);
       assert.equal(result.locallyRecorded, true);
@@ -370,8 +379,18 @@ test("fixed errors and JSON output keys redact even short secrets", async () => 
         {readInput:async()=>{throw new Error("must not read");},write:s=>{output+=s;},error:s=>{errors+=s;}});
       assert.equal(rc,1);
       assert.equal(output,"");
-      assert.ok(errors.length>0);
+      if (token === "e") assert.equal(errors,"");
+      else assert.deepEqual(JSON.parse(errors),{ok:false,error:{type:"execution",code:"E_EXECUTION",message:"E_EXECUTION"}});
       assert.equal(errors.includes(token),false,`error leaked ${JSON.stringify(token)}`);
+    }
+    // Never leak even a one-character secret that overlaps the fixed code.
+    for(const token of ["E_EXECUTION", "E", "\n"]) {
+      let output="", errors="";
+      const rc=await runRemoteCli(["--invalid"],{ENVINHANDS_TOKEN:token,ENVINHANDS_CHANGE_SPOOL:join(dir,"unused")},
+        {readInput:async()=>{throw new Error("must not read");},write:s=>{output+=s;},error:s=>{errors+=s;}});
+      assert.equal(rc,1);
+      assert.equal(output,"");
+      assert.equal(errors,"");
     }
     const token="outcome", secret="started", spool=join(dir,"spool");
     const input=JSON.stringify({registration,change:{...change("op-output-redact"),targetMachineId:registration.machineId},
@@ -399,8 +418,9 @@ test("fixed errors and JSON output keys redact even short secrets", async () => 
         {readInput:async()=>literalInput,write:s=>{output+=s;},error:s=>{errors+=s;}});
       assert.equal(literalRc,1);
       assert.equal(output,"");
-      assert.ok(errors.length>0 && !errors.includes(literalToken));
-      assert.match(errors,/audit/i);
+      assert.ok(!errors.includes(literalToken));
+      if (literalToken === "{") assert.equal(errors,"");
+      else assert.deepEqual(JSON.parse(errors),{ok:false,error:{type:"execution",code:"E_EXECUTION",message:"E_EXECUTION"}});
       assert.equal(readdirSync(secondSpool).filter(x=>x.endsWith(".json")).length,2);
     }
   } finally {rmSync(dir,{recursive:true,force:true});}

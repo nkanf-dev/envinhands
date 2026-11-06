@@ -91,6 +91,66 @@ describe("team Prime configuration", () => {
     expect(b.ssh).toBe("available"); expect(b.connectivity).toBe("not-tested");
     expect(teamPrimeDiagnostics(value.url, () => { throw Error(); }).ssh).toBe("not-checked");
   });
+
+  test("relay validates safe URLs and secrets without disclosing either credential", () => {
+    const relay = { url: "wss://relay.example/ws", secret: "relay secret" };
+    expect(validateTeamPrimeConfig({ ...value, relay }).relay).toEqual(relay);
+    expect(validateTeamPrimeConfig({ ...value, relay: { ...relay, url: "ws://127.0.0.1:3999" } }).relay?.url).toBe("ws://127.0.0.1:3999/");
+    for (const url of ["ws://relay.example", "https://relay.example", "wss://user:pass@relay.example", "wss://relay.example/x?q=a", "wss://relay.example/x#f", "wss://relay.example/x?"]) {
+      expect(() => validateTeamPrimeConfig({ ...value, relay: { ...relay, url } })).toThrow("Invalid relay url");
+    }
+    for (const secret of ["", "  ", "bad\nsecret"]) expect(() => validateTeamPrimeConfig({ ...value, relay: { ...relay, secret } })).toThrow("Invalid relay secret");
+    expect(() => validateTeamPrimeConfig({ ...value, relay: { url: relay.url } as any })).toThrow("Invalid relay secret");
+  });
+  test("relay add preserves old control, omitted relay preserves it; conflict needs replace", async () => {
+    const h = await home(), relay = { url: "wss://relay.example/ws", secret: "relay-secret" };
+    await writeTeamPrimeConfig(value, { home: h });
+    expect(await readTeamPrimeConfig({ home: h })).toEqual(value);
+    expect((await writeTeamPrimeConfig({ ...value, relay }, { home: h })).status).toBe("replaced");
+    expect(await readTeamPrimeConfig({ home: h })).toEqual({ ...value, relay });
+    expect((await writeTeamPrimeConfig(value, { home: h })).status).toBe("unchanged");
+    const changed = { ...relay, secret: "new-secret" };
+    await expect(writeTeamPrimeConfig({ ...value, relay: changed }, { home: h })).rejects.toThrow("explicit replace");
+    expect((await readTeamPrimeConfig({ home: h }))?.relay).toEqual(relay);
+    expect((await writeTeamPrimeConfig({ ...value, relay: changed }, { home: h, replace: true })).status).toBe("replaced");
+    expect((await readTeamPrimeConfig({ home: h }))?.relay).toEqual(changed);
+    await writeTeamPrimeConfig({ ...value, url: "https://other.example" }, { home: h, replace: true });
+    expect((await readTeamPrimeConfig({ home: h }))?.relay).toBeUndefined();
+  });
+  test("concurrent relay additions cannot silently clobber existing or each other", async () => {
+    const h = await home(); await writeTeamPrimeConfig(value, { home: h });
+    let release!: () => void, started!: () => void;
+    const waiting = new Promise<void>(r => { release = r; }); const entered = new Promise<void>(r => { started = r; });
+    const relay1 = { url: "wss://relay.example/one", secret: "one" }, relay2 = { url: "wss://relay.example/two", secret: "two" };
+    const first = writeTeamPrimeConfig({ ...value, relay: relay1 }, { home: h, testHooks: { beforeTempWrite: async () => { started(); await waiting; } } });
+    await entered;
+    await expect(writeTeamPrimeConfig({ ...value, relay: relay2 }, { home: h })).rejects.toThrow("locked");
+    release(); await first;
+    await expect(writeTeamPrimeConfig({ ...value, relay: relay2 }, { home: h })).rejects.toThrow("explicit replace");
+    expect((await readTeamPrimeConfig({ home: h }))?.relay).toEqual(relay1);
+    expect(await fs.readdir(join(h, ".prime-team"))).toEqual(["envinhands-mesh.json"]);
+  });
+
+  test("Windows mock forwards relay and preserves and replaces it by adapter contract", async () => {
+    const h = await home(); let stored: import("../src/team-prime-config.ts").TeamPrimeConfig | undefined;
+    const runner = (op: "read" | "write", _home: string, config?: import("../src/team-prime-config.ts").TeamPrimeConfig, replace?: boolean) => {
+      if (op === "read") return stored ? JSON.stringify(stored) : "missing";
+      if (!stored) { stored = config; return "created"; }
+      const sameControl = stored.url === config!.url && stored.token === config!.token && stored.machineId === config!.machineId;
+      const merged = { ...config!, relay: config!.relay ?? (sameControl ? stored.relay : undefined) };
+      if (JSON.stringify(stored) === JSON.stringify(merged)) return "unchanged";
+      if (!replace && (!sameControl || (stored.relay && JSON.stringify(stored.relay) !== JSON.stringify(merged.relay)))) return "exists";
+      stored = merged; return "replaced";
+    };
+    const options = { home: h, platform: "win32" as const, windowsRunner: runner };
+    const relay = { url: "wss://relay.example/socket", secret: "windows-secret" };
+    expect((await writeTeamPrimeConfig(value, options)).status).toBe("created");
+    expect((await writeTeamPrimeConfig({ ...value, relay }, options)).status).toBe("replaced");
+    expect((await readTeamPrimeConfig(options))?.relay).toEqual(relay);
+    expect((await writeTeamPrimeConfig(value, options)).status).toBe("unchanged");
+    await expect(writeTeamPrimeConfig({ ...value, relay: { ...relay, secret: "changed" } }, options)).rejects.toThrow("explicit replace");
+    expect((await writeTeamPrimeConfig({ ...value, relay: { ...relay, secret: "changed" } }, { ...options, replace: true })).status).toBe("replaced");
+  });
   test("Windows adapter is exercised with mock only, not a Windows integration test", async () => {
     const h = await home(); let stored: typeof value | undefined;
     const runner = (op: "read" | "write", _home: string, config?: typeof value, replace?: boolean) => {

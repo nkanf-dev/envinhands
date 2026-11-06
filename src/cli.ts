@@ -3,10 +3,15 @@
 import {runRemotePublishCli} from "./remote-publish-cli.ts";
 import { runFilesCli } from "./files-cli.ts";
 import { runProvisionCli } from "./provision-cli.ts";
-import { signedCliFetch } from "./cli-registration.ts";
+import { signedCliFetch, cliRegistration } from "./cli-registration.ts";
+import { createTeamNodeOnboard } from "./team-node-onboard.ts";
+import { userInfo } from "node:os";
+import { isAbsolute } from "node:path";
 import { runServiceCli } from "./service-cli.ts";
 import { runPrimeProfileCli } from "./prime-profile-cli.ts";
 import { runTeamConfigCli } from "./team-config-cli.ts";
+import { runTeamStatusCli } from "./team-status-cli.ts";
+import { resolveTeamCliEnv, resolveTeamSshEnv, resolveTeamSshUser } from "./team-cli-defaults.ts";
 import { runRouteConnectCli } from "./route-connect-cli.ts";
 import { startRouteAdvertiser } from "./route-advertiser.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -27,7 +32,7 @@ import type { DebugLogger } from "./debug-log.ts";
 import { createProcessDebugLogger } from "./process-debug-log.ts";
 export { debugLogWriterName, reapDebugLogs, createProcessDebugLogger } from "./process-debug-log.ts";
 
-const help = `Usage: bun src/cli.ts <connect MACHINE_ID USER|team-config [--replace]|publish PROFILE_JSON|files hosts|files resources [HOST]|files list [HOST]|files read [HOST]|files write [HOST]|files inspect [HOST]|provision|service CONFIG_JSON|prime-profile ENV_ROOT [PRIME_ROOT]|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: bun src/cli.ts <status [--json|--format table]|machines [--json|--format table]|connect MACHINE_ID [USER]|team-config [--replace]|publish PROFILE_JSON|files hosts|files resources [HOST]|files list [HOST]|files read [HOST]|files write [HOST]|files inspect [HOST]|provision|service CONFIG_JSON|prime-profile ENV_ROOT [PRIME_ROOT]|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
 publish: outbound strict SSH reverse publication of a local loopback service to
          approved SSH host loopback only; private JSON profile, no public bind.
@@ -43,8 +48,10 @@ prime-profile: emits normal opt-in Prime settings with collaboration, audit, exe
                read-only files and explicit project skills; no credential or config writes.
 team-config: persist ENVINHANDS_URL/TOKEN and optional ENVINHANDS_MACHINE_ID for
              prime-agent-team native mesh; --replace explicitly changes existing config.
+status/machines: show control and machine catalog status as JSON or --format table.
 connect: discover and probe candidate SSH routes, then open one interactive session;
-         requires ENVINHANDS_URL/TOKEN/SSH_IDENTITY/SSH_KNOWN_HOSTS and a TTY.
+         uses explicit environment or private Team defaults; USER may come from Team identities.
+         Requires a trusted host key, SSH identity and a TTY.
 access: encrypted SSH forwarding to configured loopback control service;
         one absolute JSON profile path, emits local URL, stop with SIGINT/SIGTERM.
 device: register reads JSON id/host and optional SSH fields; collects local OS/name.
@@ -73,6 +80,12 @@ relay:  ENVINHANDS_RELAY_SECRET (required), ENVINHANDS_RELAY_HOST (default 0.0.0
         ENVINHANDS_RELAY_PORT (default 8788).
 node:   ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET (required),
         ENVINHANDS_SSH_PORT (default 22; local 127.0.0.1 only).
+        With control URL and token, Linux/macOS automatically synchronize team
+        keys with full-team trust in the current user's home. Set
+        ENVINHANDS_TEAM_AUTO_KEYS=0 to disable. ENVINHANDS_SSH_HOST_PUBLIC_KEY
+        can override the absolute public host-key path; verify sshd uses it.
+        Windows automatic key synchronization is not implemented. Synchronization
+        does not establish SSH or administrator readiness.
 proxy:  ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET (required).
         Use as an OpenSSH ProxyCommand; stdout carries SSH bytes only.
 tmux:   ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET required. Set
@@ -94,7 +107,7 @@ Pass secrets in environment variables, never in command-line arguments.
 Plain ws:// exposes the relay secret and traffic: use only on a trusted network.
 For public networks, use wss:// with TLS termination. The server also needs HTTPS
 termination on untrusted networks. This prototype uses a shared secret; TLS alone
-does not provide per-node authorization. It does not configure SSH keys or sudo.
+does not provide per-node authorization. Node team synchronization may configure SSH keys; it does not configure sudo.
 `;
 
 export interface SignalSource {
@@ -106,6 +119,8 @@ export interface CliDependencies {
   startRelay: typeof createRelayServer;
   startNode: typeof startNodeRuntime;
   startRouteAdvertiser: typeof startRouteAdvertiser;
+  createTeamNodeOnboard: typeof createTeamNodeOnboard;
+  currentUserHome: () => string;
   startProxy: typeof startSshProxy;
   signals: SignalSource;
   stderr: { write(text: string): unknown };
@@ -117,11 +132,14 @@ export interface CliDependencies {
   execPath: string;
   stdinIsTTY: boolean;
   stdoutIsTTY: boolean;
+  /** Test-only home override for private Team defaults. */
+  teamHome?: string;
   runSsh: (argv: string[], env: NodeJS.ProcessEnv, signals: SignalSource) => Promise<number>;
 }
 const defaults: CliDependencies = {
   startServer: startAgentBusServer, startRelay: createRelayServer,
   startNode: startNodeRuntime, startRouteAdvertiser, startProxy: startSshProxy,
+  createTeamNodeOnboard, currentUserHome: () => userInfo().homedir,
   signals: process, stderr: process.stderr, stdout: process.stdout,
   fetch: globalThis.fetch, requestTimeoutMs: 20_000,
   platform: process.platform, compiled: Bun.main.startsWith("/$bunfs/"), execPath: process.execPath,
@@ -285,15 +303,107 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
   if (command === "service") return runServiceCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals, { env, platform: deps.platform });
   if (command === "prime-profile") return runPrimeProfileCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)});
   if (command === "team-config") return runTeamConfigCli(args.slice(1), env, {stdout:text=>deps.stdout.write(text),stderr:text=>deps.stderr.write(text)});
+  // A missing home never falls back to the real account or touches a Team file.
+  const teamHome = deps.teamHome ?? (deps.platform === "win32" ? env.USERPROFILE || env.HOME : env.HOME || env.USERPROFILE) ?? "";
+  const teamEnv = async () => {
+    if (teamHome) return resolveTeamCliEnv({env, home: teamHome, platform: deps.platform});
+    const partial = (env.ENVINHANDS_URL !== undefined) !== (env.ENVINHANDS_TOKEN !== undefined);
+    const partialRelay = (env.ENVINHANDS_RELAY_URL !== undefined) !== (env.ENVINHANDS_RELAY_SECRET !== undefined);
+    return {env: {...env}, source: partial ? "partial" as const : "none" as const,
+      diagnostic: partial ? "E_TEAM_CONFIG_PARTIAL" : undefined,
+      relayDiagnostic: partialRelay ? "E_RELAY_CONFIG_PARTIAL" : undefined};
+  };
+  if (command === "status" || command === "machines") {
+    const team = await teamEnv();
+    return runTeamStatusCli(args, team.env, {
+      fetch: deps.fetch,
+      write: text => deps.stdout.write(text),
+      error: text => deps.stderr.write(text),
+      readInput: async () => "",
+    }, { timeoutMs: deps.requestTimeoutMs, team: {home: teamHome, platform: deps.platform} });
+  }
   if (command === "connect") {
+    if (args.length < 2 || args.length > 3) { error("Usage: envinhands connect MACHINE_ID [USER]"); return 2; }
+    if (!deps.stdinIsTTY || !deps.stdoutIsTTY) { error("E_TTY: connect requires a TTY."); return 2; }
     const controller = new AbortController();
     const cancel = () => controller.abort();
     deps.signals.on("SIGINT", cancel); deps.signals.on("SIGTERM", cancel);
     try {
-      return await runRouteConnectCli(args, {
-        env, isTTY: deps.stdinIsTTY && deps.stdoutIsTTY, signal: controller.signal,
+      // The deadline covers headers and body consumption, including fetchers
+      // that ignore abort. Own the body reader so cancellation wakes consumers.
+      const boundedFetch: CliDependencies["fetch"] = async (url, init) => {
+        const request = new AbortController();
+        let done = false, reader: { cancel(): Promise<unknown> } | undefined;
+        let output: ReadableStreamDefaultController<Uint8Array> | undefined;
+        let rejectWait: (error: Error) => void = () => {};
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const cleanup = () => {
+          if (timer !== undefined) clearTimeout(timer);
+          controller.signal.removeEventListener("abort", abort);
+          init?.signal?.removeEventListener("abort", abort);
+        };
+        const abort = () => {
+          if (done) return;
+          done = true; request.abort(); cleanup();
+          if (reader) void reader.cancel().catch(() => {});
+          try { output?.error(new Error("request cancelled")); } catch {}
+          rejectWait(new Error("request cancelled"));
+        };
+        controller.signal.addEventListener("abort", abort, {once:true});
+        init?.signal?.addEventListener("abort", abort, {once:true});
+        const interrupted = new Promise<never>((_, reject) => { rejectWait = reject; });
+        timer = setTimeout(abort, deps.requestTimeoutMs);
+        if (controller.signal.aborted || init?.signal?.aborted) abort();
+        const pending = Promise.resolve().then(() => {
+          if (done) throw new Error("request cancelled");
+          return deps.fetch(url, {...init, signal:request.signal});
+        }).then(response => {
+          if (done) { void response.body?.cancel().catch(() => {}); throw new Error("request cancelled"); }
+          return response;
+        });
+        let response: Response;
+        try { response = await Promise.race([pending, interrupted]); }
+        catch (err) { if (!done) { done = true; cleanup(); request.abort(); } throw err; }
+        if (!response.body) { done = true; cleanup(); return response; }
+        let source: { read(): Promise<{done: boolean; value?: Uint8Array}>; cancel(): Promise<unknown> };
+        try { source = response.body.getReader(); reader = source; }
+        catch (err) { done = true; cleanup(); request.abort(); throw err; }
+        const body = new ReadableStream<Uint8Array>({
+          start(c) { output = c; },
+          async pull(c) {
+            try {
+              const next = await source.read();
+              if (done) return;
+              if (next.done) { done = true; cleanup(); c.close(); }
+              else c.enqueue(next.value!);
+            } catch {
+              if (!done) { done = true; cleanup(); request.abort(); c.error(new Error("response body failed")); }
+            }
+          },
+          cancel() {
+            if (!done) { done = true; cleanup(); request.abort(); void source.cancel().catch(() => {}); }
+          },
+        });
+        return new Response(body, {status:response.status, statusText:response.statusText, headers:response.headers});
+      };
+      const team = await teamEnv();
+      if (team.diagnostic) { error(team.diagnostic); return 1; }
+      if (team.relayDiagnostic) error(team.relayDiagnostic);
+      const ssh = await resolveTeamSshEnv({env: team.env, home: teamHome, platform: deps.platform});
+      if (ssh.diagnostic) error(ssh.diagnostic);
+      const safeProxyBinary = (value: string | undefined): value is string =>
+        !!value && isAbsolute(value) && !/[%\x00-\x1f\x7f]/.test(value);
+      if (ssh.env.ENVINHANDS_PROXY_BINARY === undefined && deps.compiled && safeProxyBinary(deps.execPath))
+        ssh.env.ENVINHANDS_PROXY_BINARY = deps.execPath;
+      if (deps.platform !== "win32" && ssh.env.ENVINHANDS_RELAY_URL && ssh.env.ENVINHANDS_RELAY_SECRET && !safeProxyBinary(ssh.env.ENVINHANDS_PROXY_BINARY))
+        error("E_RELAY_BINARY: set ENVINHANDS_PROXY_BINARY to an absolute compiled CLI path.");
+      const resolvedUser = await resolveTeamSshUser({machineId: args[1]!, user: args[2], env: ssh.env,
+        fetch: (url, init) => boundedFetch(url, init), signal: controller.signal});
+      if (!resolvedUser.user) { error(resolvedUser.diagnostic ?? "E_SSH_USER"); return controller.signal.aborted ? 130 : 1; }
+      return await runRouteConnectCli(["connect", args[1]!, resolvedUser.user], {
+        env: ssh.env, isTTY: deps.stdinIsTTY && deps.stdoutIsTTY, signal: controller.signal,
         stderr: text => deps.stderr.write(text + "\n"),
-        fetch: (url, init) => deps.fetch(url, init), platform: deps.platform,
+        fetch: (url, init) => boundedFetch(url, init), platform: deps.platform,
       });
     } finally { deps.signals.removeListener("SIGINT", cancel); deps.signals.removeListener("SIGTERM", cancel); }
   }
@@ -315,7 +425,13 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
         return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
       },
     };
-    return command === "files" ? runFilesCli(args.slice(1), env, io) : command === "provision" ? runProvisionCli(args.slice(1), env, io) : command === "device" ? runDeviceCli(args.slice(1), env, io) : command === "collaborate" ? runCollaborationCli(args.slice(1), env, io) : command === "change" ? runChangeCli(args.slice(1), env, io) : command === "verify-access" ? runAccessCli(args.slice(1), env, io) : runRemoteCli(args.slice(1), env, io);
+    let resourceEnv = env;
+    if (command !== "provision") {
+      const team = await teamEnv();
+      resourceEnv = team.env;
+      if (team.diagnostic) error(team.diagnostic);
+    }
+    return command === "files" ? runFilesCli(args.slice(1), resourceEnv, io) : command === "provision" ? runProvisionCli(args.slice(1), env, io) : command === "device" ? runDeviceCli(args.slice(1), resourceEnv, io) : command === "collaborate" ? runCollaborationCli(args.slice(1), resourceEnv, io) : command === "change" ? runChangeCli(args.slice(1), resourceEnv, io) : command === "verify-access" ? runAccessCli(args.slice(1), resourceEnv, io) : runRemoteCli(args.slice(1), resourceEnv, io);
   }
   if (command === "tmux") {
     try {
@@ -367,11 +483,11 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
       // Catalog observations are optional and never gate the relay node. Each
       // observation is untrusted until an SSH client verifies it with its own key.
       let advertiser: ReturnType<typeof startRouteAdvertiser> | undefined;
+      const controller = "node-" + createHash("sha256").update(id!).digest("hex");
+      const attribution = { ...env, ENVINHANDS_MACHINE_ID: id!, ENVINHANDS_AGENT_ID: controller,
+        ENVINHANDS_SESSION_ID: randomUUID(), ENVINHANDS_AUDIT_SIGNATURE: "EnvInHands node route observer" };
       if (env.ENVINHANDS_URL && env.ENVINHANDS_TOKEN) {
         try {
-          const controller = "node-" + createHash("sha256").update(id!).digest("hex");
-          const attribution = { ...env, ENVINHANDS_MACHINE_ID: id!, ENVINHANDS_AGENT_ID: controller,
-            ENVINHANDS_SESSION_ID: randomUUID(), ENVINHANDS_AUDIT_SIGNATURE: "EnvInHands node route observer" };
           const signed = signedCliFetch(attribution, deps.fetch);
           advertiser = deps.startRouteAdvertiser({ baseUrl: env.ENVINHANDS_URL, token: env.ENVINHANDS_TOKEN,
             machineId: id!, relayNodeId: id!, controller, sshPort,
@@ -394,9 +510,48 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
       let runtime: ReturnType<typeof startNodeRuntime>;
       try { runtime = deps.startNode({ relayUrl: url, nodeId: id!, secret, sshPort, onEvent:nodeEvent }); }
       catch (err) { advertiser?.stop(); throw err; }
+      // Onboarding is independent of relay registration and never gates it.
+      let onboarding: ReturnType<typeof createTeamNodeOnboard> | undefined;
+      let onboardingCleanup: Promise<void> | undefined;
+      if (env.ENVINHANDS_URL && env.ENVINHANDS_TOKEN && env.ENVINHANDS_TEAM_AUTO_KEYS !== "0") {
+        if (deps.platform !== "linux" && deps.platform !== "darwin") {
+          error("E_TEAM_SYNC: synchronization is unsupported on this platform.");
+        } else {
+          try {
+            const home = deps.currentUserHome();
+            const hostPublicKeyPath = env.ENVINHANDS_SSH_HOST_PUBLIC_KEY ?? (deps.platform === "darwin"
+              ? "/private/etc/ssh/ssh_host_ed25519_key.pub" : "/etc/ssh/ssh_host_ed25519_key.pub");
+            if (!isAbsolute(hostPublicKeyPath) || hostPublicKeyPath.split("/").includes("..") || /[\x00-\x1f\x7f]/.test(hostPublicKeyPath)) throw new Error();
+            // Check the same URL and bearer rules used by control commands.
+            const baseUrl = apiUrl(env, error);
+            const token = required(env, "ENVINHANDS_TOKEN");
+            if (/\s|[\x00-\x1f\x7f]/.test(token)) throw new Error();
+            onboarding = deps.createTeamNodeOnboard({ home, deviceId: id!, hostPublicKeyPath,
+              baseUrl, token, registration: cliRegistration(attribution), fullTeamTrust: true,
+              fetch: (target, init) => deps.fetch(target, init),
+              onStatus: status => {
+                if (status.code !== "synchronized" && status.code !== "host-pins-recovered") {
+                  logger?.error("team_onboard_incomplete", {machineId:id!, errorCategory:"onboarding"});
+                  error("E_TEAM_SYNC: synchronization incomplete; retrying.");
+                }
+              },
+            });
+            onboarding.start();
+          } catch {
+            const failed = onboarding;
+            onboarding = undefined;
+            if (failed) onboardingCleanup = Promise.resolve().then(() => failed.stop()).catch(() => {});
+            logger?.error("team_onboard_error", {machineId:id!, errorCategory:"configuration"});
+            error("E_TEAM_SYNC: synchronization could not start.");
+          }
+        }
+      }
       // ready may reject when stopped before first registration. Retry is handled by the runtime.
       void runtime.ready.catch(() => {});
-      return await untilSignal(deps.signals, () => { advertiser?.stop(); runtime.close(); }, runtime.finished);
+      return await untilSignal(deps.signals, async () => {
+        try { runtime.close(); }
+        finally { try { await onboarding?.stop(); await onboardingCleanup; } finally { advertiser?.stop(); } }
+      }, runtime.finished);
     }
     if (command === "server") {
       const token = required(env, "ENVINHANDS_TOKEN");

@@ -37,6 +37,14 @@ export function validSshHostKeyAlias(value: unknown): value is string {
 export function validSshUser(value: unknown): value is string {
   return typeof value === "string" && value.length <= 64 && /^[A-Za-z0-9_]/.test(value) && !/[^A-Za-z0-9_. -]/.test(value) && !/[ .]$/.test(value);
 }
+/** Windows cmd ProxyCommand supports simple absolute .exe paths, including spaces.
+ * Reject shell metacharacters, percent expansion, UNC and device paths. */
+export function validSshRelayBinary(value: unknown, platform: NodeJS.Platform = process.platform): value is string {
+  if (typeof value !== "string" || /[%\x00-\x1f\x7f]/.test(value)) return false;
+  if (platform !== "win32") return isAbsolute(value);
+  return win32.isAbsolute(value) && /^[A-Za-z]:[\\/][A-Za-z0-9_ .\\/-]+\.exe$/i.test(value) &&
+    !value.split(/[\\/]/).some(part => part === "." || part === ".." || /[ .]$/.test(part));
+}
 export function buildSshRouteArgv(route: SshRoute, access: SshAccess): string[] {
   if (!route || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(route.id) || /[\r\n]/.test(route.id) || !host(route.host) ||
       !Number.isInteger(route.port ?? 22) || (route.port ?? 22) < 1 || (route.port ?? 22) > 65535 ||
@@ -45,17 +53,22 @@ export function buildSshRouteArgv(route: SshRoute, access: SshAccess): string[] 
   let proxy: string | undefined;
   if (route.relay !== undefined) {
     const relay = route.relay;
-    if (process.platform === "win32") throw new Error("Windows is unsupported for SSH ProxyCommand");
     if (!relay || typeof relay !== "object" || Array.isArray(relay) ||
         Object.keys(relay).some(key => !["relayNodeId", "binaryPath"].includes(key)) ||
         typeof relay.relayNodeId !== "string" || relay.relayNodeId.length < 1 || relay.relayNodeId.length > 128 ||
         !/^[A-Za-z0-9_-]/.test(relay.relayNodeId) || /[^A-Za-z0-9._-]/.test(relay.relayNodeId) ||
-        typeof relay.binaryPath !== "string" || !isAbsolute(relay.binaryPath) || /[%\x00-\x1f\x7f]/.test(relay.binaryPath) ||
+        !validSshRelayBinary(relay.binaryPath) ||
         route.jump !== undefined) throw new Error("Invalid SSH relay route");
-    // OpenSSH expands %-tokens before the POSIX shell parses ProxyCommand.
-    // Reject '%' above; quote each shell word and never interpolate the secret.
-    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-    proxy = `ProxyCommand=${quote(relay.binaryPath)} proxy ${quote(relay.relayNodeId)}`;
+    // Neither command includes the URL or secret; they stay in the process environment.
+    if (process.platform === "win32") {
+      // The validated path has no cmd metacharacters, quotes or percent tokens.
+      const binary = relay.binaryPath.replaceAll("\\", "/");
+      proxy = `ProxyCommand="${binary}" proxy ${relay.relayNodeId}`;
+    } else {
+      // OpenSSH expands %-tokens before the POSIX shell parses ProxyCommand.
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+      proxy = `ProxyCommand=${quote(relay.binaryPath)} proxy ${quote(relay.relayNodeId)}`;
+    }
   }
   // -F also suppresses system config. IdentitiesOnly alone does not: every
   // IdentityFile in config would still be offered. NUL is the Windows null

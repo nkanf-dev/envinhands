@@ -100,12 +100,27 @@ test("relay ProxyCommand quotes shell metacharacters and does not include inheri
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("Windows direct routes isolate configuration and reject unverified proxy routes", () => {
+test("Windows direct and relay routes use isolated SSH and a fixed quoted proxy", () => {
   const original = Object.getOwnPropertyDescriptor(process, "platform")!;
   try {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     assert.throws(() => buildSshRouteArgv({ id: "relay", host: "localhost",
-      relay: { relayNodeId: "nas", binaryPath: "/usr/bin/envinhands" } }, access), /Windows/);
+      relay: { relayNodeId: "nas", binaryPath: "/usr/bin/envinhands" } }, access), /Invalid SSH relay/);
+    for (const binaryPath of ["C:\\Program Files\\EnvInHands\\envinhands.exe", "C:\\tool\\envinhands.exe"]) {
+      const relay = buildSshRouteArgv({ id: "relay", host: "localhost", relay: { relayNodeId: "nas-1", binaryPath } }, access);
+      const expected = `ProxyCommand="${binaryPath.replaceAll("\\", "/")}" proxy nas-1`;
+      assert.ok(relay.includes(expected));
+      assert.ok(relay.includes("StrictHostKeyChecking=yes"));
+      assert.ok(relay.includes("IdentitiesOnly=yes"));
+      assert.ok(relay.includes("ControlPath=none"));
+      assert.ok(!relay.join(" ").includes("relay-secret"));
+      const effective = [...relay]; effective[1] = original.value === "win32" ? "NUL" : "/dev/null";
+      const check = spawnSync("ssh", ["-G", ...effective], { encoding: "utf8" });
+      assert.equal(check.status, 0);
+      assert.ok(check.stdout.includes(expected.replace("ProxyCommand=", "proxycommand ")));
+    }
+    for (const binaryPath of ['C:\\evil&calc.exe', 'C:\\evil%PATH%.exe', 'C:\\bad"x.exe', 'C:\\bad!x.exe', 'C:\\foo.bat', 'C:\\foo\\..\\env.exe'])
+      assert.throws(() => buildSshRouteArgv({ id:"relay", host:"localhost", relay:{relayNodeId:"nas", binaryPath} }, access));
     const args = buildSshRouteArgv({ id: "direct", host: "localhost" }, { ...access,
       identityFile: "C:\\Users\\Agent\\id", knownHostsFile: "C:\\Users\\Agent Name\\known_hosts" });
     assert.deepEqual(args.slice(0, 2), ["-F", "NUL"]);

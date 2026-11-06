@@ -1,8 +1,8 @@
 /** Interactive team SSH route selection. Network catalog entries are observations, not trust. */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fetchTransportCatalog, selectCatalogSshRoute } from "./transport-catalog.ts";
-import { SshRoutesUnavailable, validSshHostKeyAlias, validSshUser } from "./transports/ssh-routes.ts";
+import { SshRoutesUnavailable, validSshHostKeyAlias, validSshRelayBinary, validSshUser } from "./transports/ssh-routes.ts";
 import type { CommandRunner } from "./readiness.ts";
 
 type Fetcher = (url: URL, init: RequestInit) => Promise<Response>;
@@ -19,6 +19,16 @@ export interface RouteConnectDependencies {
   platform?: NodeJS.Platform;
   totalBudgetMs?: number;
   probeTimeoutMs?: number;
+}
+
+/** Validate relay settings without putting credentials in SSH arguments. */
+export function isRelayConfigured(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): boolean {
+  const url = env.ENVINHANDS_RELAY_URL, secret = env.ENVINHANDS_RELAY_SECRET;
+  if (!validSshRelayBinary(env.ENVINHANDS_PROXY_BINARY, platform) || !url || !secret || /[\x00-\x1f\x7f]/.test(secret)) return false;
+  try {
+    const parsed = new URL(url);
+    return ["ws:", "wss:"].includes(parsed.protocol) && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+  } catch { return false; }
 }
 
 /** Return a process exit code; the parent CLI owns process.exitCode and signal handling. */
@@ -48,10 +58,7 @@ export async function runRouteConnectCli(args: readonly string[], deps: RouteCon
     }) : await pending;
   } catch { return signal?.aborted ? fail("Connection cancelled.", 130) : fail("Cannot fetch the transport catalog. Check URL, token and network."); }
   if (signal?.aborted) return fail("Connection cancelled.", 130);
-  const windows = (deps.platform ?? process.platform) === "win32";
-  const relayUrl = env.ENVINHANDS_RELAY_URL, relaySecret = env.ENVINHANDS_RELAY_SECRET;
-  let relayReady = !windows && Boolean(env.ENVINHANDS_PROXY_BINARY && isAbsolute(env.ENVINHANDS_PROXY_BINARY) && !/[%\x00-\x1f\x7f]/.test(env.ENVINHANDS_PROXY_BINARY) && relayUrl && relaySecret && !/[\x00-\x1f\x7f]/.test(relaySecret));
-  try { const url = new URL(relayUrl ?? ""); if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) relayReady = false; } catch { relayReady = false; }
+  const relayReady = isRelayConfigured(env, deps.platform ?? process.platform);
   // Work around catalog's eager validation of every route: an unsupported or
   // unconfigured relay must not suppress usable direct/P2P routes.
   const skippedRelay = page.routes.some(r => r.kind === "relay" && r.status === "observed") && !relayReady;
@@ -107,7 +114,7 @@ export async function runRouteConnectCli(args: readonly string[], deps: RouteCon
     }
   } catch (error) {
     if (signal?.aborted) return fail("Connection cancelled.", 130);
-    if (error instanceof SshRoutesUnavailable) return fail(`No verified SSH route (${error.observations.length} probes failed or timed out). Check connectivity, public key and the trusted host key.${skippedRelay ? " Relay unavailable: configure it locally or use a supported platform." : ""}`);
+    if (error instanceof SshRoutesUnavailable) return fail(`No verified SSH route (${error.observations.length} probes failed or timed out). Check connectivity, public key and the trusted host key.${skippedRelay ? " Relay unavailable: configure URL, secret and an absolute proxy binary path; Windows requires a simple .exe path." : ""}`);
     return fail("Invalid SSH configuration or catalog route. Check local credential paths and relay configuration.");
   }
   if (signal?.aborted) return fail("Connection cancelled.", 130);

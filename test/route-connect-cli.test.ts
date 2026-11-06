@@ -5,7 +5,7 @@ import type { ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runRouteConnectCli, type RouteConnectDependencies } from "../src/route-connect-cli.ts";
+import { isRelayConfigured, runRouteConnectCli, type RouteConnectDependencies } from "../src/route-connect-cli.ts";
 
 const token = "secret-token-value";
 const env = {ENVINHANDS_URL:"http://localhost:1234", ENVINHANDS_TOKEN:token, ENVINHANDS_SSH_IDENTITY:"/tmp/id", ENVINHANDS_SSH_KNOWN_HOSTS:"/tmp/known", ENVINHANDS_PROXY_BINARY:"/tmp/proxy", ENVINHANDS_RELAY_URL:"wss://relay.example/", ENVINHANDS_RELAY_SECRET:"relay-secret"};
@@ -90,4 +90,15 @@ test("machine IDs with underscores and space-containing SSH users remain separat
     assert.equal(await runRouteConnectCli(["connect", "nas_1", user], {stderr:()=>{}}), 2);
   for (const id of ["nas%h", "nas 1", "nas\n", 'nas"1'])
     assert.equal(await runRouteConnectCli(["connect", id, "Jane Doe"], {stderr:()=>{}}), 2);
+});
+
+
+test("Windows relay settings support simple absolute exe paths, including spaces", () => {
+  for (const path of ["C:\\Program Files\\EnvInHands\\envinhands.exe", "C:\\envinhands\\envinhands.exe"]) {
+    assert.equal(isRelayConfigured({...env, ENVINHANDS_PROXY_BINARY:path}, "win32"), true);
+  }
+  for (const path of ["C:\\bad&exec.exe", "C:\\bad%PATH%.exe", "C:\\bad.cmd", "relative.exe"])
+    assert.equal(isRelayConfigured({...env, ENVINHANDS_PROXY_BINARY:path}, "win32"), false);
+  assert.equal(isRelayConfigured({...env, ENVINHANDS_PROXY_BINARY:"C:\\ok.exe", ENVINHANDS_RELAY_SECRET:""}, "win32"), false);
+  assert.equal(isRelayConfigured({...env, ENVINHANDS_PROXY_BINARY:"C:\\ok.exe", ENVINHANDS_RELAY_URL:"wss://name:password@example.test/"}, "win32"), false);
 });

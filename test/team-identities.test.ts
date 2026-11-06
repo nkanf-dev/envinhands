@@ -211,7 +211,7 @@ describe("team public identity directory",()=>{
  });
  test("records macOS and Windows identities distinctly with safe system users",async()=>{
   const x=await setup();try {
-   await x.client.upsert({...item("mac-laptop"),os:"macos",user:"Alice"},"mac",null);
+   await x.client.upsert({...item("node-beta"),os:"macos",user:"Alice"},"mac",null);
    await x.client.upsert({...item("win"),os:"windows",user:"Agent User"},"win",null);
    expect((await x.client.listPage()).records.map(r=>r.os)).toEqual(["macos","windows"]);
    await expect(x.client.upsert({...item("mac-bad"),os:"macos",user:"root"},"bad",null)).rejects.toThrow();

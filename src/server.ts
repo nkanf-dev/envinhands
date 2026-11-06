@@ -76,7 +76,7 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
         if (path === "/v1/changes" || path === "/v1/agent-registrations") return changes.fetch(request);
         return path === "/v1/machines" || path.startsWith("/v1/machines/") || path.startsWith("/v1/resources/")
           ? machines.fetch(request) : bus.fetch(request);
-      }),
+      }, nativeMesh),
     });
   } catch (error) {
     emit("server_start_failed", { errorCategory: "startup" });

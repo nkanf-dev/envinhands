@@ -10,7 +10,10 @@ export function createMutationAudit(options: {dbPath: string; token: string; mac
     sessionId: randomUUID(), machineId: options.machineId, signature: "EnvInHands service; original caller unregistered"});
   const hash = (text: string) => createHash("sha256").update(text).digest("hex");
   return {
-    async dispatch(request: Request, next: (request: Request) => Response | Promise<Response>): Promise<Response> {
+    async dispatch(request: Request, next: (request: Request) => Response | Promise<Response>, heartbeat?: {
+      tryAuditedHeartbeat(request: Request, actor: string): Promise<Response | null>;
+      rememberAuditedHeartbeat(request: Request, actor: string): Promise<void>;
+    }): Promise<Response> {
       const url = new URL(request.url);
       if (request.method === "GET" || request.method === "HEAD" || ["/v1/changes", "/v1/agent-registrations"].includes(url.pathname)) return next(request);
       if (!authorized(request)) return response(401, {error: "Unauthorized"});
@@ -29,6 +32,19 @@ export function createMutationAudit(options: {dbPath: string; token: string; mac
         if (JSON.stringify(registration).includes(options.token)) throw new Error();
         store.register(registration);
       } catch { return response(400, {error: "Invalid mutation attribution"}); }
+      // Anonymous legacy callers share a service identity, so they can never
+      // reuse an attribution-specific audit binding.
+      const isHeartbeat = !!encoded && !!heartbeat && request.method === "POST" && url.pathname === "/v1/native-mesh/agents";
+      // The target machine is part of the audit provenance. Different logical
+      // services sharing one database cannot reuse one another's binding.
+      const heartbeatActor = JSON.stringify([options.machineId, registration.registrationId]);
+      if (isHeartbeat) {
+        try {
+          const unchanged = await heartbeat.tryAuditedHeartbeat(request.clone() as unknown as Request, heartbeatActor);
+          if (unchanged) return unchanged;
+        } catch { /* Fall through to the normal fail-closed audit. */ }
+      }
+      const heartbeatForAudit = isHeartbeat ? request : null;
       const at = new Date().toISOString();
       let resourceId = url.pathname, bodyHash: string | null = null;
       const bodyLimit = url.pathname === "/v1/shared-files" ? 68 * 1024 : 16 * 1024;
@@ -82,6 +98,10 @@ export function createMutationAudit(options: {dbPath: string; token: string; mac
         store.append({...common, ...snapshots, requestId: randomUUID(), outcome: result.ok ? "success" : result.status < 500 ? "failed" : "unknown",
           occurredAt: new Date().toISOString(), evidenceRef: `intent:${intentId};http-status:${result.status};request-path-sha256:${hash(resourceId)}`});
       } catch { return response(503, {error: "Mutation completion was not recorded; effects may exist, inspect original operation before retry"}); }
+      if (heartbeatForAudit && result.ok) {
+        try { await heartbeat!.rememberAuditedHeartbeat(heartbeatForAudit, heartbeatActor); }
+        catch { /* A missed optimization never changes the audited result. */ }
+      }
       return result;
     },
     close() { store.close(); },

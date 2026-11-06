@@ -83,7 +83,7 @@ test("rejects invalid registrations and keeps namespaced IDs unambiguous", async
 });
 
 
-test("bounded keyset pages, legacy overflow, validation and persistent revisions", async () => {
+test("bounded snapshot pages, legacy overflow, validation and restart expiration", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mesh-pages-")), dbPath = join(dir, "db.sqlite");
   let api = createNativeMeshApi({dbPath, token:"token"});
   const request = (query = "") => api.fetch(new Request(`http://localhost/v1/native-mesh/agents${query}`, {headers:{authorization:"Bearer token"}}));
@@ -95,18 +95,18 @@ test("bounded keyset pages, legacy overflow, validation and persistent revisions
     let after: string | null = null, revision: string | undefined;
     const ids: string[] = [];
     do {
-      const q = new URLSearchParams({limit:"100"});
+      const q = new URLSearchParams({limit:"99"});
       if (after) { q.set("after",after); q.set("revision",revision!); }
       const res = await request(`?${q}`), text = await res.text();
       expect(res.status).toBe(200); expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2*1024*1024);
-      const page = JSON.parse(text); expect(page.version).toBe(2); expect(page.agents.length).toBeLessThanOrEqual(100);
+      const page = JSON.parse(text); expect(page.version).toBe(2); expect(page.agents.length).toBeLessThanOrEqual(99);
       revision ??= page.revision; expect(page.revision).toBe(revision);
       ids.push(...page.agents.map((a: {id:string}) => a.id)); after = page.nextCursor;
     } while (after);
     expect(ids).toHaveLength(205); expect(new Set(ids).size).toBe(205); expect(ids).toEqual([...ids].sort());
     const first = await (await request("?limit=1")).json() as {nextCursor:string;revision:string};
-    await register(0); // Even an update changes the snapshot.
-    expect((await request(`?limit=1&after=${first.nextCursor}&revision=${first.revision}`)).status).toBe(409);
+    await register(0); // Heartbeats do not change an existing snapshot.
+    expect((await request(`?limit=1&after=${first.nextCursor}&revision=${first.revision}`)).status).toBe(200);
     api.close(); api = createNativeMeshApi({dbPath,token:"token"});
     expect((await request(`?limit=1&after=${first.nextCursor}&revision=${first.revision}`)).status).toBe(409);
     const client = new NativeMesh({baseUrl:"http://localhost",token:"token",fetch: ((input,init) => api.fetch(new Request(String(input),init))) as typeof fetch});
@@ -138,7 +138,7 @@ test("client validates legacy and v2 pages and retries revision conflicts", asyn
   expect(requests).toBe(6);
 });
 
-test("server enforces the byte budget even for oversized stored rows", async () => {
+test("server rejects corrupt stored rows and enforces the hard byte budget", async () => {
   const dir=mkdtempSync(join(tmpdir(),"mesh-bytes-")), dbPath=join(dir,"db.sqlite");
   const api=createNativeMeshApi({dbPath,token:"token"}), db=new Database(dbPath);
   const get=(q:string)=>api.fetch(new Request(`http://localhost/v1/native-mesh/agents${q}`,{headers:{authorization:"Bearer token"}}));
@@ -146,16 +146,15 @@ test("server enforces the byte budget even for oversized stored rows", async () 
     const insert=db.query("INSERT INTO native_mesh_agents_v1 VALUES (?,?,?,?,?,?,?)");
     for (let i=0;i<3;i++) insert.run(qualifiedAgentId("h",String(i)),"h",String(i),null,"x".repeat(750000),"active","2025-01-01T00:00:00Z");
     expect((await get("")).status).toBe(413);
-    const first=await get("?limit=100"), text=await first.text(), page=JSON.parse(text);
-    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2*1024*1024); expect(page.agents).toHaveLength(2); expect(page.nextCursor).toBe(page.agents[1].id);
-    expect((await get(`?limit=100&after=${page.nextCursor}&revision=${page.revision}`)).status).toBe(200);
+    // Rows this large violate registration field limits, even below the hard byte ceiling.
+    expect((await get("?limit=100")).status).toBe(500);
     db.query("UPDATE native_mesh_agents_v1 SET name=?").run("x".repeat(2*1024*1024));
     expect((await get("?limit=100")).status).toBe(413);
   } finally { db.close(); api.close(); rmSync(dir,{recursive:true,force:true}); }
 });
 
 
-test("real HTTP discovery exceeds 2 MiB with valid records and detects changes across connections and restart", async () => {
+test("real HTTP discovery exceeds 2 MiB and rejects topology changes and restart", async () => {
   const dir=mkdtempSync(join(tmpdir(),"mesh-real-pages-")), dbPath=join(dir,"db.sqlite"), token="token";
   let api=createNativeMeshApi({dbPath,token});
   const second=createNativeMeshApi({dbPath,token});

@@ -275,29 +275,51 @@ Env Unix `tmux NODE SESSION [USER]` 还需编译 proxy 的绝对路径/`ENVINHAN
 
 不要仅 `cp` 活跃 `.sqlite`，尤其不忽略 WAL/SHM。优先用 SQLite backup API 从现有库生成**新**独立备份文件；或经批准正常关闭服务后做一致性冷备。本项目没有替操作员自动完成备份的服务。
 
-适用于已授权库的 Python 示意（只将具体路径作为非敏感运维参数；不输出表内容）：
+以下 Unix Python 3 示意仅用于已授权库。先由操作员准备并核验备份父目录及其全部路径分量：由当前用户控制，父目录 `0700`，无不受信任的并发写者；源和目标使用不同的绝对路径。单独运行此进程，不要在多线程程序中修改进程级 umask。目标必须是全新文件；不输出表内容。
 
 ```python
-from pathlib import Path
+import os
 import sqlite3
+import stat
+from contextlib import closing
+from pathlib import Path
 from urllib.parse import quote
 
 source = Path("<approved-live-db>")
 backup = Path("<new-private-backup-db>")
-if backup.exists():
-    raise RuntimeError("Refuse to overwrite existing backup")
-uri = "file:" + quote(str(source), safe="/") + "?mode=ro"
-src = sqlite3.connect(uri, uri=True)
-dst = sqlite3.connect(backup)
-try:
-    src.backup(dst)
-    if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-        raise RuntimeError("Backup integrity check failed")
-finally:
-    dst.close()
-    src.close()
-backup.chmod(0o600)  # Windows 另核 ACL，不以此替代。
+if os.name != "posix" or not source.is_absolute() or not backup.is_absolute():
+    raise RuntimeError("Use absolute paths on Unix")
+parent = os.stat(backup.parent, follow_symlinks=False)
+if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid()
+        or stat.S_IMODE(parent.st_mode) != 0o700):
+    raise RuntimeError("Backup parent must be owned and mode 0700")
+
+def db_uri(path, mode):
+    return "file:" + quote(str(path), safe="/") + "?mode=" + mode
+
+# SQLite 按只读模式打开源；不创建源文件。
+with closing(sqlite3.connect(db_uri(source, "ro"), uri=True)) as src:
+    old_umask = os.umask(0o077)
+    try:
+        # 原子拒绝任何已存在的路径，包括悬空符号链接。
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    finally:
+        os.umask(old_umask)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RuntimeError("Backup is not a regular file")
+        # sqlite3 接受路径/URI，而不是上面的 fd；rw 不会创建新文件。
+        with closing(sqlite3.connect(db_uri(backup, "rw"), uri=True)) as dst:
+            src.backup(dst)
+            if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("Backup integrity check failed")
+    finally:
+        os.close(fd)
 ```
+
+`O_EXCL` 在创建时拒绝已有目标，不先创建宽权限文件再 chmod。在上述受控路径前提下，创建或备份失败时不覆盖已有文件；如果已创建新文件，可能留下不完整文件，由操作员核对后安全处置，不把它当成功备份。检查父目录不等于检查所有祖先路径/ACL；预先确保整个路径和存储由可信操作员控制。SQLite 会按路径重新打开目标，并不使用或绑定上述 fd；fd 检查与 SQLite 打开之间仍有路径替换竞争。`mode=rw` 只阻止 SQLite 创建缺失文件，不防恶意并发替换；此示意不用于对抗能改目录或目标的写者。源连接只读、目标为新文件，不对 live 库执行备份写入或修复；只读连接可能受 SQLite WAL/SHM 条件、锁及权限影响，不承诺零干扰。Windows 不适用此 POSIX 权限示例，须使用等效的原子新建与受限 ACL 流程。
+
+复制到另一台机器前，先在发送端和接收端准备受信的私有目录、限制目标文件权限/ACL 并使用获准加密通道；传输过程和中间副本也要保护，不能等复制完成后才补权限。恢复时同样不得覆盖 live 库。
 
 备份可能短暂等待写者，记录实际结果和失败，不无限轮询。保存 commit/schema、运行时、备份时刻、文件 hash、记录游标/operation 引用；敏感数据只在受限位置，报告不 dump 消息/密钥。SQLite backup 不备份 token、外部配置、spool 或 SSH trust，需分别安全保管。
 

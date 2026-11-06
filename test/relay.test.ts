@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createRelayServer, sendRelayFrame, startNodeClient } from "../src/relay";
+import { createServer, connect as connectTcp, type Socket } from "node:net";
 
 const secret = "local-test-secret";
 const cleanup: Array<() => void> = [];
+async function deadline<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(label)), ms); })]); }
+  finally { if (timer) clearTimeout(timer); }
+}
 afterEach(() => { while (cleanup.length) cleanup.pop()!(); });
 
 function startRelay(setupTimeoutMs = 1000, limits: Partial<Parameters<typeof createRelayServer>[0]> = {}) {
@@ -353,3 +359,168 @@ test("v2 rejects legacy upgrades and binary data sent after FIN", async()=>{
  const peerClose=new Promise<CloseEvent>(resolve=>nextChannel.addEventListener("close",resolve,{once:true}));
  next.close(1000);expect((await peerClose).code).toBe(1011);
 });
+
+
+// Forward real TCP bytes without parsing WebSocket frames. Only the first
+// connection (the control socket) can be blackholed; channel sockets still flow.
+async function controlProxy(targetPort: number) {
+  let direction: "none" | "to-relay" | "to-node" = "none";
+  let connections = 0;
+  const sockets = new Set<Socket>();
+  const server = createServer((incoming) => {
+    const control = ++connections === 1;
+    const outgoing = connectTcp(targetPort, "127.0.0.1");
+    sockets.add(incoming); sockets.add(outgoing);
+    incoming.on("data", (data) => { if (!control || direction !== "to-relay") outgoing.write(data); });
+    outgoing.on("data", (data) => { if (!control || direction !== "to-node") incoming.write(data); });
+    incoming.on("error", () => {}); outgoing.on("error", () => {});
+    incoming.on("close", () => { sockets.delete(incoming); outgoing.destroy(); });
+    outgoing.on("close", () => { sockets.delete(outgoing); incoming.destroy(); });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Proxy failed to listen");
+  cleanup.push(() => { for (const socket of sockets) socket.destroy(); server.close(); });
+  return { port: address.port, blackhole(value: typeof direction) { direction = value; } };
+}
+
+async function waitFor(predicate: () => Promise<boolean>, label: string, timeout = 2500) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await Bun.sleep(20);
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
+for (const side of ["relay", "node"] as const) {
+  test(`${side} heartbeat detects a silent one-way control blackhole and releases sessions`, async () => {
+    const relayTiming = side === "relay"
+      ? { heartbeatIntervalMs: 40, heartbeatTimeoutMs: 120 }
+      : { heartbeatIntervalMs: 1000, heartbeatTimeoutMs: 2000 };
+    const nodeTiming = side === "node"
+      ? { heartbeatIntervalMs: 40, heartbeatTimeoutMs: 120 }
+      : { heartbeatIntervalMs: 1000, heartbeatTimeoutMs: 2000 };
+    const { relay, base } = startRelay(1000, { ...relayTiming, maxNodes: 1, maxSessions: 1 });
+    const proxy = await controlProxy(relay.port);
+    const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {
+      data(socket, data) { socket.write(data); }, error() {},
+    } });
+    cleanup.push(() => tcp.stop(true));
+    const node = startNodeClient({ relayUrl: `ws://127.0.0.1:${proxy.port}`, nodeId: "heartbeat", secret, sshPort: tcp.port, registrationTimeoutMs: 120, ...nodeTiming });
+    cleanup.push(() => node.close());
+    await node.ready;
+    const session = connect(base, "/client?node=heartbeat");
+    expect(await nextText(session)).toBe("ready-v2");
+    const bytes = new Uint8Array([1, 0, 255]);
+    expect(await echo(session, bytes)).toEqual(bytes);
+    await Bun.sleep(350); // Several heartbeat cycles must not kill a healthy idle control.
+    expect(await echo(session, bytes)).toEqual(bytes);
+    const sessionClosed = closed(session);
+    proxy.blackhole(side === "relay" ? "to-relay" : "to-node");
+    await deadline(node.closed, 2500, "Node control did not close");
+    await sessionClosed;
+    const http = base.replace("ws:", "http:");
+    const headers = { Authorization: `Bearer ${secret}` };
+    await waitFor(async () => (await fetch(http + "/client?node=heartbeat&v=2", { headers })).status === 404, "stale registration removal");
+    const replacement = startNodeClient({ relayUrl: base, nodeId: "heartbeat", secret, sshPort: tcp.port, ...nodeTiming });
+    cleanup.push(() => replacement.close());
+    await deadline(replacement.ready, 2000, "Replacement registration timed out");
+    node.close(); // Repeated close on the old client must not remove the replacement.
+    const second = connect(base, "/client?node=heartbeat");
+    expect(await nextText(second)).toBe("ready-v2");
+    expect(await echo(second, bytes)).toEqual(bytes);
+  }, 5000);
+}
+
+test("registration deadline closes a server that upgrades but never registers", async () => {
+  const silent = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { return server.upgrade(req) ? undefined : new Response("upgrade failed", { status: 400 }); },
+    websocket: { message() {}, idleTimeout: 0 },
+  });
+  cleanup.push(() => silent.stop(true));
+  const node = startNodeClient({ relayUrl: `ws://127.0.0.1:${silent.port}`, nodeId: "silent", secret,
+    heartbeatIntervalMs: 50, heartbeatTimeoutMs: 150, registrationTimeoutMs: 120 });
+  cleanup.push(() => node.close());
+  await expect(deadline(node.ready, 1500, "Registration deadline did not fire")).rejects.toThrow(/registr/i);
+  await deadline(node.closed, 1500, "Timed out waiting for control close");
+  node.close(); node.close();
+}, 3000);
+
+
+test("registration timeout covers a TCP peer that never completes HTTP upgrade", async () => {
+  const silent = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {}, error() {} } });
+  cleanup.push(() => silent.stop(true));
+  const node = startNodeClient({ relayUrl: `ws://127.0.0.1:${silent.port}`, nodeId: "handshake", secret, registrationTimeoutMs: 120 });
+  cleanup.push(() => node.close());
+  await expect(deadline(node.ready, 1500, "registration deadline not enforced")).rejects.toThrow(/registr/i);
+  await deadline(node.closed, 1500, "handshake did not close");
+}, 3000);
+
+test("explicit close interrupts a pending HTTP handshake", async () => {
+  let accepted!: () => void;
+  const opened = new Promise<void>((resolve) => { accepted = resolve; });
+  const silent = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open() { accepted(); }, data() {}, error() {} } });
+  cleanup.push(() => silent.stop(true));
+  const node = startNodeClient({ relayUrl: `ws://127.0.0.1:${silent.port}`, nodeId: "early-handshake", secret, registrationTimeoutMs: 2000 });
+  cleanup.push(() => node.close());
+  const ready = node.ready.catch((error) => error);
+  await deadline(opened, 1000, "handshake did not start");
+  node.close(); node.close();
+  expect(await ready).toBeInstanceOf(Error);
+  await deadline(node.closed, 1000, "close did not interrupt handshake");
+}, 3000);
+
+test("explicit stop during a blackhole closes control and allows relay port reuse", async () => {
+  const { relay } = startRelay(1000, { heartbeatIntervalMs: 40, heartbeatTimeoutMs: 500 });
+  const proxy = await controlProxy(relay.port);
+  const node = startNodeClient({ relayUrl: `ws://127.0.0.1:${proxy.port}`, nodeId: "stopping", secret,
+    heartbeatIntervalMs: 40, heartbeatTimeoutMs: 500 });
+  cleanup.push(() => node.close());
+  await node.ready;
+  proxy.blackhole("to-relay");
+  await Bun.sleep(70); // Leave an outstanding ping before explicit shutdown.
+  node.close(); node.close();
+  await deadline(node.closed, 1000, "Node did not stop");
+  relay.stop(); relay.stop();
+  const next = createRelayServer({ hostname: "127.0.0.1", port: relay.port, secret, heartbeatIntervalMs: 40, heartbeatTimeoutMs: 100 });
+  cleanup.push(() => next.stop());
+  const replacement = startNodeClient({ relayUrl: `ws://127.0.0.1:${next.port}`, nodeId: "stopping", secret,
+    heartbeatIntervalMs: 40, heartbeatTimeoutMs: 100 });
+  cleanup.push(() => replacement.close());
+  await replacement.ready;
+  await Bun.sleep(600); // Old heartbeat deadlines must not affect the new relay.
+  const status = await fetch(`http://127.0.0.1:${next.port}/client?node=stopping&v=2`, { headers: { Authorization: `Bearer ${secret}` } });
+  expect(status.status).toBe(400);
+}, 3000);
+
+
+test("rejects invalid heartbeat and registration durations", () => {
+  for (const value of [0, -1, 1.5, NaN, Infinity, 2_147_483_648]) {
+    for (const name of ["heartbeatIntervalMs", "heartbeatTimeoutMs"] as const) {
+      expect(() => createRelayServer({ secret, [name]: value })).toThrow();
+      expect(() => startNodeClient({ relayUrl: "ws://127.0.0.1:1", nodeId: "invalid", secret, [name]: value })).toThrow();
+    }
+    expect(() => startNodeClient({ relayUrl: "ws://127.0.0.1:1", nodeId: "invalid", secret, registrationTimeoutMs: value })).toThrow();
+  }
+});
+
+test("unsolicited wrong pong payloads do not keep a relay registration alive", async () => {
+  const { relay, base } = startRelay(1000, { heartbeatIntervalMs: 40, heartbeatTimeoutMs: 120 });
+  const raw = connectTcp(relay.port, "127.0.0.1");
+  cleanup.push(() => raw.destroy());
+  raw.on("error", () => {});
+  let response = "";
+  raw.on("data", (data) => { response += data.toString("latin1"); });
+  const ended = new Promise<void>((resolve) => raw.once("close", () => resolve()));
+  raw.write(`GET /node?id=wrong-pong&v=2 HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer ${secret}\r\n\r\n`);
+  await waitFor(async () => response.includes("registered-v2"), "raw node registration");
+  // A client-to-server WebSocket pong must be masked. This fixed payload never
+  // matches the relay's random ping nonce; no automatic pong is generated.
+  const wrongPong = Buffer.from([0x8a, 0x81, 1, 2, 3, 4, 0x78 ^ 1]);
+  const timer = setInterval(() => raw.write(wrongPong), 15);
+  try { await deadline(ended, 1200, "Wrong pongs masked heartbeat failure"); }
+  finally { clearInterval(timer); }
+  const status = await fetch(base.replace("ws:", "http:") + "/client?node=wrong-pong&v=2", { headers: { Authorization: `Bearer ${secret}` } });
+  expect(status.status).toBe(404);
+}, 2500);

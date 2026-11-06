@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { startNodeRuntime, type NodeConnection, type NodeRuntimeDependencies } from "../src/node-runtime";
 import { createRelayServer } from "../src/relay";
+import { createServer, connect as connectTcp, type Socket } from "node:net";
 
 const options = {
   relayUrl: "ws://127.0.0.1:1", nodeId: "test-node", secret: "local-test-secret",
@@ -206,3 +207,75 @@ test("a node registers again when a local relay restarts", async () => {
     tcp.stop(true);
   }
 }, 5000);
+
+
+test("runtime forwards heartbeat and registration options on every attempt", async () => {
+  const timers = fakeTimers();
+  const clients: ReturnType<typeof connection>[] = [];
+  const received: unknown[] = [];
+  const heartbeat = { heartbeatIntervalMs: 50, heartbeatTimeoutMs: 150, registrationTimeoutMs: 300 };
+  const runtime = startNodeRuntime({ ...options, ...heartbeat }, { ...timers, startClient(opts) {
+    received.push(opts);
+    const c = connection(); clients.push(c); return c.client;
+  } });
+  const result = runtime.ready.catch(() => {});
+  clients[0]!.ready.reject(new Error("registration timed out"));
+  clients[0]!.closed.resolve();
+  await flush(); timers.fire(); await flush();
+  expect(received).toHaveLength(2);
+  for (const opts of received) expect(opts).toMatchObject(heartbeat);
+  runtime.close(); clients[1]!.closed.resolve();
+  await runtime.finished; await result;
+  expect(timers.pending.size).toBe(0);
+});
+
+test("runtime reconnects after a silent TCP blackhole is removed", async () => {
+  const secret = "local-test-secret";
+  const relay = createRelayServer({ hostname: "127.0.0.1", secret, heartbeatIntervalMs: 40, heartbeatTimeoutMs: 120 });
+  const sockets = new Set<Socket>();
+  let blocked = false;
+  let attempts = 0;
+  const proxy = createServer((incoming) => {
+    attempts++;
+    const outgoing = connectTcp(relay.port, "127.0.0.1");
+    sockets.add(incoming); sockets.add(outgoing);
+    incoming.on("data", (data) => { if (!blocked) outgoing.write(data); });
+    outgoing.on("data", (data) => { if (!blocked) incoming.write(data); });
+    incoming.on("error", () => {}); outgoing.on("error", () => {});
+    incoming.on("close", () => { sockets.delete(incoming); outgoing.destroy(); });
+    outgoing.on("close", () => { sockets.delete(outgoing); incoming.destroy(); });
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const address = proxy.address();
+  if (!address || typeof address === "string") throw new Error("Proxy failed to listen");
+  const runtime = startNodeRuntime({ relayUrl: `ws://127.0.0.1:${address.port}`, nodeId: "recover", secret,
+    heartbeatIntervalMs: 40, heartbeatTimeoutMs: 120, registrationTimeoutMs: 250,
+    reconnect: { initialDelayMs: 30, maxDelayMs: 80, jitter: 0 },
+  });
+  const headers = { Authorization: `Bearer ${secret}` };
+  const url = `http://127.0.0.1:${relay.port}/client?node=recover&v=2`;
+  async function waitForStatus(expected: number) {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      if ((await fetch(url, { headers })).status === expected) return;
+      await Bun.sleep(20);
+    }
+    throw new Error(`Timed out waiting for HTTP ${expected}`);
+  }
+  try {
+    await runtime.ready;
+    await waitForStatus(400); // registered, but not a WebSocket upgrade
+    blocked = true; // Existing TCP sockets stay open, but bytes are silently dropped.
+    await waitForStatus(404);
+    blocked = false;
+    await waitForStatus(400);
+    expect(attempts).toBeGreaterThan(1);
+  } finally {
+    runtime.close();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([runtime.finished, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Runtime did not stop")), 2000); })]); }
+    finally { if (timer) clearTimeout(timer); }
+    for (const socket of sockets) socket.destroy();
+    proxy.close(); relay.stop();
+  }
+}, 7000);

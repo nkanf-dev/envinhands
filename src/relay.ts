@@ -7,8 +7,8 @@ import { RELAY_VERSION, REGISTERED, READY, FIN, FIN_ACK, relayControl, relayEndp
  * and traffic. Supply TLS externally for wss://. SSH itself remains end-to-end
  * between the SSH client and server; this code does not implement SSH.
  * Global application caps below do not limit TCP connections or incomplete HTTP
- * headers before fetch, request/body bandwidth, or per-identity abuse. WebSocket
- * idleTimeout remains disabled; node and active session lifetimes are unbounded.
+ * headers before fetch, request/body bandwidth, or per-identity abuse. Control
+ * connections use bilateral WebSocket ping/pong; data session idleTimeout is disabled.
  * These limits do not make this prototype safe for public deployment.
  *
  * Protocol: WebSocket GET /node?id=NAME registers; GET /client?node=NAME
@@ -26,6 +26,45 @@ const ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 const MAX_FRAME = 1024 * 1024;
 const MAX_BUFFER = 4 * 1024 * 1024;
 const DRAIN_TIMEOUT_MS = 10_000;
+// Allow for slow long-distance proxies without relying on TCP keepalive.
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS = 30_000;
+const REGISTRATION_TIMEOUT_MS = 30_000;
+
+function duration(value: number | undefined, fallback: number, name: string): number {
+  const result = value ?? fallback;
+  if (!Number.isSafeInteger(result) || result < 1 || result > 2_147_483_647) throw new Error(`Invalid ${name}`);
+  return result;
+}
+
+/** One outstanding random ping at a time. Other traffic and stale pongs do not extend the deadline. */
+function heartbeat(interval: number, timeout: number, ping: (nonce: string) => boolean, fail: () => void) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let nonce: string | undefined;
+  let deadline = 0;
+  let stopped = false;
+  function schedule() {
+    timer = setTimeout(() => {
+      if (stopped) return;
+      nonce = crypto.randomUUID();
+      deadline = performance.now() + timeout;
+      if (!ping(nonce)) { stop(); fail(); return; }
+      timer = setTimeout(() => { stop(); fail(); }, timeout);
+    }, interval);
+  }
+  function stop() { stopped = true; if (timer) clearTimeout(timer); timer = undefined; }
+  schedule();
+  return {
+    stop,
+    pong(value: string) {
+      if (stopped || !nonce || value !== nonce) return;
+      if (performance.now() >= deadline) { stop(); fail(); return; }
+      if (timer) clearTimeout(timer);
+      nonce = undefined;
+      schedule();
+    },
+  };
+}
 
 /** Bun returns -1 for accepted, buffered frames; 0 means dropped. */
 export function sendRelayFrame(ws: Pick<ServerSocket, "send" | "getBufferedAmount">, data: string | Uint8Array): boolean {
@@ -58,6 +97,9 @@ export interface RelayOptions {
   maxWebSockets?: number;
   /** Fixed global one-second window, counts all HTTP requests reaching fetch. */
   maxRequestsPerSecond?: number;
+  /** Control ping cadence and response deadline; defaults are 30 seconds each. */
+  heartbeatIntervalMs?: number;
+  heartbeatTimeoutMs?: number;
 }
 
 function validSecret(secret: string): void {
@@ -67,6 +109,8 @@ function validSecret(secret: string): void {
 /** Starts a Bun WebSocket relay. stop() closes registered sockets and sessions. */
 export function createRelayServer(options: RelayOptions) {
   validSecret(options.secret);
+  const heartbeatInterval = duration(options.heartbeatIntervalMs, HEARTBEAT_INTERVAL_MS, "heartbeatIntervalMs");
+  const heartbeatTimeout = duration(options.heartbeatTimeoutMs, HEARTBEAT_TIMEOUT_MS, "heartbeatTimeoutMs");
   const timeout = options.setupTimeoutMs ?? 10_000;
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid setup timeout");
   const limit = (value: number | undefined, fallback: number, name: string) => {
@@ -79,6 +123,7 @@ export function createRelayServer(options: RelayOptions) {
   const maxWebSockets = limit(options.maxWebSockets, 384, "maxWebSockets");
   const maxRequestsPerSecond = limit(options.maxRequestsPerSecond, 200, "maxRequestsPerSecond");
   const nodes = new Map<string, ServerSocket>();
+  const heartbeats = new Map<ServerSocket, ReturnType<typeof heartbeat>>();
   const reservedNodes = new Set<string>();
   const reservedChannels = new Set<string>();
   let sessionCount = 0;
@@ -98,6 +143,19 @@ export function createRelayServer(options: RelayOptions) {
     clearTimeout(s.timer);
     try { s.client.close(code, reason); } catch {}
     try { s.channel?.close(code, reason); } catch {}
+  }
+  function removeNode(ws: ServerSocket) {
+    heartbeats.get(ws)?.stop();
+    heartbeats.delete(ws);
+    const id = ws.data.id;
+    if (nodes.get(id) !== ws) return;
+    nodes.delete(id);
+    for (const [key, session] of sessions) if (session.node === id) end(key);
+  }
+  function terminateNode(ws: ServerSocket) {
+    // Release the name before terminating; a later close belongs to this generation only.
+    removeNode(ws);
+    try { ws.terminate(); } catch {}
   }
   const server = Bun.serve<SocketData>({
     hostname: options.hostname ?? "0.0.0.0",
@@ -161,7 +219,11 @@ export function createRelayServer(options: RelayOptions) {
         if (role === "node") {
           if (nodes.has(id)) { ws.close(1008, "Node already registered"); return; }
           nodes.set(id, ws);
-          if (!sendRelayFrame(ws, REGISTERED)) ws.close(1011, "Control send failed");
+          if (!sendRelayFrame(ws, REGISTERED)) { terminateNode(ws); return; }
+          heartbeats.set(ws, heartbeat(heartbeatInterval, heartbeatTimeout, nonce => {
+            try { return ws.getBufferedAmount() + nonce.length + 14 <= MAX_BUFFER && ws.ping(nonce) !== 0; }
+            catch { return false; }
+          }, () => terminateNode(ws)));
         } else if (role === "client") {
           const node = nodes.get(id);
           if (!node) { ws.close(1011, "Node unavailable"); return; }
@@ -181,7 +243,7 @@ export function createRelayServer(options: RelayOptions) {
       },
       message(ws, message) {
         const { role, id } = ws.data;
-        if (role === "node") { ws.close(1008, "Unexpected control message"); return; }
+        if (role === "node") { terminateNode(ws); return; }
         const s = sessions.get(id);
         if (!s || (role === "channel" ? s.channel !== ws : s.client !== ws)) { ws.close(); return; }
         if (role === "channel" && !s.ready && message === READY) {
@@ -209,15 +271,16 @@ export function createRelayServer(options: RelayOptions) {
         if (role === "client" ? s.clientFin : s.nodeFin) { end(id); return; }
         if (message.byteLength && !sendRelayFrame(peer, message)) end(id, 1011, "Relay buffer exceeded");
       },
+      pong(ws, data) {
+        if (ws.data.role === "node") heartbeats.get(ws)?.pong(data.toString());
+      },
       close(ws, code) {
         sockets.delete(ws);
         socketCount--;
         const { role, id } = ws.data;
         if (ws.data.sessionReserved) { sessionCount--; ws.data.sessionReserved = false; }
         if (role === "node") {
-          if (nodes.get(id) !== ws) return;
-          nodes.delete(id);
-          for (const [key, session] of sessions) if (session.node === id) end(key);
+          removeNode(ws);
         } else {
           const s = sessions.get(id);
           if (s && (role === "client" ? s.client === ws : s.channel === ws)) {
@@ -230,12 +293,14 @@ export function createRelayServer(options: RelayOptions) {
   });
   return {
     hostname: server.hostname,
-    port: server.port,
+    port: server.port!,
     stop() {
       if (stopping) return;
       stopping = true;
       for (const id of sessions.keys()) end(id);
-      for (const ws of sockets) try { ws.close(); } catch {}
+      for (const hb of heartbeats.values()) hb.stop();
+      heartbeats.clear();
+      for (const ws of sockets) try { ws.terminate(); } catch {}
       nodes.clear();
       server.stop(true);
     },
@@ -250,6 +315,11 @@ export interface NodeClientOptions {
   /** Local SSH host defaults to loopback. Never supplied by a relay client. */
   sshHost?: string;
   sshPort?: number;
+  /** Bound the entire connection and registration handshake. Defaults to 30 seconds. */
+  registrationTimeoutMs?: number;
+  /** Control ping cadence and response deadline; defaults are 30 seconds each. */
+  heartbeatIntervalMs?: number;
+  heartbeatTimeoutMs?: number;
 }
 
 /** Registers one node; opens one outbound WebSocket and TCP socket per session. */
@@ -260,8 +330,13 @@ export function startNodeClient(options: NodeClientOptions) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid SSH port");
   const base = new URL(options.relayUrl);
   if (base.protocol !== "ws:" && base.protocol !== "wss:") throw new Error("Expected ws:// or wss:// relay URL");
+  const heartbeatInterval = duration(options.heartbeatIntervalMs, HEARTBEAT_INTERVAL_MS, "heartbeatIntervalMs");
+  const heartbeatTimeout = duration(options.heartbeatTimeoutMs, HEARTBEAT_TIMEOUT_MS, "heartbeatTimeoutMs");
+  const registrationTimeout = duration(options.registrationTimeoutMs, REGISTRATION_TIMEOUT_MS, "registrationTimeoutMs");
   const headers = { Authorization: `Bearer ${options.secret}` };
+  const registrationDeadline = performance.now() + registrationTimeout;
   const control = new WebSocket(relayEndpoint(base.toString(), "/node", "id", options.nodeId), { headers });
+  control.binaryType = "arraybuffer";
   const channels = new Set<() => void>();
   let stopped = false;
   let registered = false;
@@ -271,12 +346,17 @@ export function startNodeClient(options: NodeClientOptions) {
   let resolveClosed!: () => void;
   // Only the control WebSocket lifetime is represented, not SSH session drain.
   const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+  let controlHeartbeat: ReturnType<typeof heartbeat> | undefined;
+  const registrationTimer = setTimeout(() => stop(), registrationTimeout);
   function stop() {
     if (stopped) return;
     stopped = true;
+    clearTimeout(registrationTimer);
+    controlHeartbeat?.stop();
     if (!registered) rejectReady(new Error("Node registration failed or closed"));
     for (const close of [...channels]) close();
-    try { control.close(); } catch {}
+    // close() waits up to 30 seconds for a peer on a blackholed connection.
+    try { control.terminate(); } catch {}
   }
   function connect(id: string) {
     if (stopped || channels.size >= 256) return;
@@ -297,7 +377,8 @@ export function startNodeClient(options: NodeClientOptions) {
     function abort() {
       if (closed) return;
       finish(); try { tcp?.terminate(); } catch {}
-      try { ws.close(4000, "Session aborted"); } catch {}
+      // Abort never claims delivery; do not retain a blackholed close handshake.
+      try { ws.terminate(); } catch {}
     }
     function send(data: string | Uint8Array): boolean {
       const bytes = typeof data === "string" ? data.length : data.byteLength;
@@ -389,7 +470,17 @@ export function startNodeClient(options: NodeClientOptions) {
     };
   }
   control.onmessage = (event) => {
-    if (event.data === REGISTERED && !registered) { registered = true; resolveReady(); return; }
+    if (stopped) return;
+    if (event.data === REGISTERED && !registered) {
+      if (performance.now() >= registrationDeadline) { stop(); return; }
+      registered = true;
+      clearTimeout(registrationTimer);
+      controlHeartbeat = heartbeat(heartbeatInterval, heartbeatTimeout, nonce => {
+        if (control.readyState !== WebSocket.OPEN || control.bufferedAmount + nonce.length + 14 > MAX_BUFFER) return false;
+        try { control.ping(nonce); return true; } catch { return false; }
+      }, stop);
+      resolveReady(); return;
+    }
     if (!registered || typeof event.data !== "string") { stop(); return; }
     try {
       const msg = JSON.parse(event.data);
@@ -397,6 +488,9 @@ export function startNodeClient(options: NodeClientOptions) {
       connect(msg.id);
     } catch { stop(); }
   };
+  control.addEventListener("pong", event => {
+    if (event.data instanceof ArrayBuffer) controlHeartbeat?.pong(new TextDecoder().decode(event.data));
+  });
   control.onerror = stop;
   control.onclose = () => { stop(); resolveClosed(); };
   return { ready, closed, close: stop };

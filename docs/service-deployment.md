@@ -9,7 +9,7 @@
 - 操作员管理的绝对配置路径，例如 `<private>/control-service.json`。
 - 自有绝对 SQLite 路径，例如 `<data>/control.sqlite`。数据库目录应已存在并可写。
 
-配置为**精确四字段** JSON：
+配置为 JSON：`hostname`、`port`、`dbPath`、`token` 四项必填；`machineId` 和 `sharedRoots` 两项可选，不允许其他字段。最小配置例如：
 
 ```json
 {
@@ -22,7 +22,7 @@
 
 这不是可直接运行的示例凭据。由获准操作员在受限文件/secret 工具中生成并保存随机 token；不在聊天、argv、日志、Git 或 shell history 粘贴实际值。客户端以受保护配置/环境读取同值，重启不重新生成。
 
-Unix 配置须为当前用户拥有的普通文件，精确 `0600`（无 setuid/setgid），不接受 symlink；父目录建议 `0700`。加载时检查打开后的文件，限 16 KiB、UTF-8 JSON、四字段精确校验。Windows 使用实际 ACL 限制配置读取，代码不把 POSIX mode 当作 ACL 证明。配置加载不创建目录、复制凭据或更改权限。
+Unix 配置须为当前用户拥有的普通文件，精确 `0600`（无 setuid/setgid），不接受 symlink；父目录建议 `0700`。加载时检查打开后的文件，限 16 KiB、UTF-8 JSON、必填和可选字段校验（拒绝未知字段）。Windows 使用实际 ACL 限制配置读取，代码不把 POSIX mode 当作 ACL 证明。配置加载不创建目录、复制凭据或更改权限。
 
 `hostname` 必须是明确主机名/IP，`port` 是 `0..65535` 整数，`dbPath` 和配置引用均为绝对路径。`port=0` 每次可能不同，须读取实际 ready；固定端口冲突会失败，不关闭其他进程。新服务建议 `127.0.0.1`。非 loopback 显式监听仍不自带 TLS，也不意味着允许公网发布。
 
@@ -46,7 +46,7 @@ Unix 配置须为当前用户拥有的普通文件，精确 `0600`（无 setuid/
 
 ## 3. 正式新服务的修改署名要求
 
-入口固定调用 `startAgentBusServer({ ...config, requireSignedMutations: true })`。配置仍只四字段，不允许通过配置关闭该标记。旧 `server` 默认行为不是此正式入口的契约。
+入口固定调用 `startAgentBusServer({ ...config, requireSignedMutations: true })`。配置接受上述四个必填字段和两个可选字段，不允许通过配置关闭该标记。旧 `server` 默认行为不是此正式入口的契约。
 
 除 Agent 注册/change 记录本身的 API 外，需修改的请求带已声明的注册与操作标识：
 
@@ -83,7 +83,7 @@ header 是注册**声明**，不是加密签名或额外权限批准。不要上
 
 服务配置含 secret，应独立安全备份，不能当普通日志。SQLite 使用一致性 backup/VACUUM INTO 或已停止写入的冷备，不仅复制活跃主文件；参见 `operations-manual.md` 的备份演练与限制。DB 不包含客户端 spool、SSH trust 或模型凭据，须分别保存。
 
-切换新版本时：新源码目录→校验原锁/测试→自有新库正常重启验证→主控批准实际切换→备份并协调停止旧服务→以批准配置/DB启动→实际客户端读写核对。不要在运行中 hot-copy 源码或覆盖 DB；旧配置/凭据格式不同先人工核对，不直接将临时 `{url,token,dbPath}` 当成本四字段配置。
+切换新版本时：新源码目录→校验原锁/测试→自有新库正常重启验证→主控批准实际切换→备份并协调停止旧服务→以批准配置/DB启动→实际客户端读写核对。不要在运行中 hot-copy 源码或覆盖 DB；旧配置/凭据格式不同先人工核对，不直接将临时 `{url,token,dbPath}` 当成正式服务配置。
 
 本任务不读取或复制当前 live 数据库/token，不修改根 `src/cli.ts` 或 `src/server.ts`；入口可独立执行，根接线由主控决定。
 
@@ -96,13 +96,29 @@ header 是注册**声明**，不是加密签名或额外权限批准。不要上
 <absolute-bun> run typecheck
 ```
 
-测试使用自有临时目录、随机 token、loopback port 0 和真实 HTTP/SQLite。覆盖配置精确字段/大小/权限、无凭据错误输出、正式签名声明模式、实际 device inventory、同配置/数据库正常关闭重启及监听释放。Unix `0600` 约束须在后续 Linux 冻结包验证；当前 Windows 测试不靠 mode 伪造 ACL；测试收到真实 ready 事件后再访问，不定时轮询。
+测试使用自有临时目录、随机 token、loopback port 0 和真实 HTTP/SQLite。覆盖配置字段/大小/权限、无凭据错误输出、正式签名声明模式、实际 device inventory、同配置/数据库正常关闭重启及监听释放。Unix `0600` 约束须在后续 Linux 冻结包验证；当前 Windows 测试不靠 mode 伪造 ACL；测试收到真实 ready 事件后再访问，不定时轮询。
 
 VM 独立进程正常启动→inventory→SIGTERM→原 config/DB再起→数据读回，将在主控提供完整新源码包后单独执行并给实际 raw/exit/hash。**在收到那份回执前，不以本地测试说该正式入口已经部署到控制 VM，更不能替换 livebus。** 新服务端与客户端修改声明契约正在同阶段整合，以主控最终冻结包与精确测试为准。
 
 ## Selected work resources and host identity
 
 The private configuration also accepts optional `machineId` and `sharedRoots`.
+For example (replace the paths and placeholder token with approved values):
+
+```json
+{
+  "hostname": "127.0.0.1",
+  "port": 0,
+  "dbPath": "/ABSOLUTE/PRIVATE/control.sqlite",
+  "token": "GENERATE_AND_SAVE_PRIVATELY_NOT_THIS_EXAMPLE",
+  "machineId": "nas-01",
+  "sharedRoots": {"work": "/ABSOLUTE/APPROVED/work"}
+}
+```
+
+Both fields may be omitted. `machineId` and each resource ID must match
+`[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}`; shared root paths must be absolute,
+contain no control characters, and must not contain the token.
 `machineId` is the target host label in signed mutation records. `sharedRoots` maps
 explicit safe resource IDs to absolute directories owned/approved by the resource
 operator. Do not share a whole home, private config directory, Secrets, or a live

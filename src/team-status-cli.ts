@@ -4,6 +4,12 @@ import type { ChangeCliIO } from "./change-cli.ts";
 
 export interface TeamStatusMachine {
   id: string;
+  name: string;
+  os: string;
+  sshUser: string | null;
+  sshPort: number;
+  relayNodeId: string | null;
+  status: "pending" | "ready" | "not-ready";
   state: "pending" | "ready" | "not-ready";
   endpoint: { host: string; port: number } | null;
   checkedAt: string | null;
@@ -36,13 +42,17 @@ function parseMachines(value: unknown, secrets: string[]): TeamStatusMachine[] {
   const ids = new Set<string>();
   const machines = value.machines.map((m: unknown): TeamStatusMachine => {
     if (!record(m) || !validId(m.id) || ids.has(m.id) || !["pending", "ready", "not-ready"].includes(m.status as string) ||
+        typeof m.name !== "string" || !m.name.trim() || m.name.length > 200 ||
+        typeof m.os !== "string" || !m.os.trim() || m.os.length > 100 ||
+        !(m.sshUser === null || typeof m.sshUser === "string" && /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(m.sshUser)) ||
+        !(m.relayNodeId === null || validId(m.relayNodeId)) ||
         !validHost(m.host) || !Number.isInteger(m.sshPort) || (m.sshPort as number) < 1 || (m.sshPort as number) > 65535 ||
         !(m.checkedAt === null || typeof m.checkedAt === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(m.checkedAt) && Number.isFinite(Date.parse(m.checkedAt)))) {
       throw new Failure("INVALID_RESPONSE", "Invalid machine catalog response.", 5);
     }
     ids.add(m.id);
-    if (secrets.some(secret => (m.id as string).includes(secret) || (m.host as string).includes(secret))) throw new Failure("INVALID_RESPONSE", "Invalid machine catalog response.", 5);
-    return { id: m.id, state: m.status as TeamStatusMachine["state"], endpoint: {host:m.host, port:m.sshPort as number}, checkedAt:m.checkedAt as string | null, errorCode:null };
+    if (secrets.some(secret => [m.id,m.name,m.os,m.host,m.sshUser,m.relayNodeId].some(field => typeof field === "string" && field.includes(secret)))) throw new Failure("INVALID_RESPONSE", "Invalid machine catalog response.", 5);
+    return { id: m.id, name:m.name, os:m.os, sshUser:m.sshUser as string | null, sshPort:m.sshPort as number, relayNodeId:m.relayNodeId as string | null, status:m.status as TeamStatusMachine["status"], state: m.status as TeamStatusMachine["state"], endpoint: {host:m.host, port:m.sshPort as number}, checkedAt:m.checkedAt as string | null, errorCode:null };
   });
   return machines.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
@@ -71,8 +81,9 @@ function render(result: TeamStatusResult): string {
     const counts = ["ready", "pending", "not-ready"].map(state => `${state}=${result.machines.filter(m => m.state === state).length}`).join(" ");
     return `CONTROL  reachable\nMACHINES ${result.machines.length} ${counts}\nLOCAL    ${result.localMachineId ?? "-"}\n`;
   }
-  const rows = result.machines.map(m => `${m.id}\t${m.state}\t${m.endpoint ? `${m.endpoint.host.includes(":") ? `[${m.endpoint.host}]` : m.endpoint.host}:${m.endpoint.port}` : "-"}\t${m.checkedAt ?? "-"}`);
-  return ["ID\tCATALOG\tSSH ENDPOINT\tCHECKED AT", ...rows].join("\n") + "\n";
+  const cell = (value: string) => value.replace(/[\x00-\x1f\x7f]/g, "?");
+  const rows = result.machines.map(m => `${m.id}\t${m.status}\t${cell(m.os)}\t${m.sshUser ?? "-"}`);
+  return ["ID\tSTATUS\tOS\tUSER", ...rows].join("\n") + "\n";
 }
 /** Read the catalog; no route probe or mutation is performed. */
 export async function runTeamStatusCli(args: string[], env: NodeJS.ProcessEnv, io: ChangeCliIO, options: TeamStatusOptions = {}): Promise<number> {

@@ -14,7 +14,7 @@ function harness(fetcher: ChangeCliIO["fetch"] = fetch) {
   return {io:{readInput:async()=>{throw Error("unexpected stdin");}, write:(x:string)=>{out+=x;}, error:(x:string)=>{err+=x;}, fetch:fetcher}, get out(){return out;}, get err(){return err;}};
 }
 const fixed={now:()=>new Date("2026-01-01T00:00:00.000Z")};
-const machine={id:"node-1",status:"pending",host:"host.local",sshPort:22,checkedAt:null};
+const machine={id:"node-1",name:"Node One",os:"linux",sshUser:"alice",sshPort:22,relayNodeId:null,status:"pending",host:"host.local",checkedAt:null};
 const env={ENVINHANDS_URL:"https://example.test",ENVINHANDS_TOKEN:"private-token",ENVINHANDS_RELAY_URL:"wss://relay.test",ENVINHANDS_RELAY_SECRET:"private-relay"};
 describe("status and machines",()=>{
  test("real loopback catalog and private Team defaults, read only",async()=>{
@@ -23,18 +23,19 @@ describe("status and machines",()=>{
   const server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:api.fetch});
   try {
    const url=`http://127.0.0.1:${server.port}`;
-   const response=await fetch(`${url}/v1/machines`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},body:JSON.stringify({id:"node-a",name:"A",host:"127.0.0.1",os:"linux",sshUser:"alice"})});
+   const response=await fetch(`${url}/v1/machines`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},body:JSON.stringify({id:"node-a",name:"A",host:"127.0.0.1",os:"linux",sshUser:"alice",sshPort:2222,relayNodeId:"relay-a"})});
    expect(response.status).toBe(202);
    await writeTeamPrimeConfig({url,token,machineId:"node-a"},{home:h});
    const before=await fs.readFile(teamPrimeConfigPath(h),"utf8");
    const x=harness(); const code=await runTeamStatusCli(["machines","--json"],{},x.io,{...fixed,team:{home:h}});
    expect(code).toBe(0); expect(x.err).toBe("");
    const result=JSON.parse(x.out);
-   expect(result).toEqual({ok:true,data:{command:"machines",checkedAt:"2026-01-01T00:00:00.000Z",localMachineId:"node-a",machines:[{id:"node-a",state:"pending",endpoint:{host:"127.0.0.1",port:22},checkedAt:null,errorCode:null}]},meta:{}});
+   expect(result).toEqual({ok:true,data:{command:"machines",checkedAt:"2026-01-01T00:00:00.000Z",localMachineId:"node-a",machines:[{id:"node-a",name:"A",os:"linux",sshUser:"alice",sshPort:2222,relayNodeId:"relay-a",status:"pending",state:"pending",endpoint:{host:"127.0.0.1",port:2222},checkedAt:null,errorCode:null}]},meta:{}});
    expect(x.out).not.toContain(token);
    expect(await fs.readFile(teamPrimeConfigPath(h),"utf8")).toEqual(before);
    const y=harness(); expect(await runTeamStatusCli(["status","--format","table"],{},y.io,{...fixed,team:{home:h}})).toBe(0);
    expect(y.out).toContain("pending=1"); expect(y.err).toBe("");
+   const table=harness();expect(await runTeamStatusCli(["machines","--format","table"],{},table.io,{...fixed,team:{home:h}})).toBe(0);expect(table.out).toBe("ID\tSTATUS\tOS\tUSER\nnode-a\tpending\tlinux\talice\n");
   } finally {await server.stop(true);api.close();}
  });
  test("sorts stable IDs, shows stored state and checked timestamp, and uses GET only",async()=>{
@@ -42,12 +43,12 @@ describe("status and machines",()=>{
   const x=harness(async (_url,init)=>{calls.push(init!);return Response.json({machines:[{...machine,id:"z",status:"not-ready",checkedAt:"2026-01-01T00:00:00.000Z"},machine]});});
   expect(await runTeamStatusCli(["machines","--json"],env,x.io,fixed)).toBe(0);
   expect(JSON.parse(x.out).data.machines.map((m:{id:string})=>m.id)).toEqual(["node-1","z"]);
-  expect(JSON.parse(x.out).data.machines[1]).toEqual({id:"z",state:"not-ready",endpoint:{host:"host.local",port:22},checkedAt:"2026-01-01T00:00:00.000Z",errorCode:null});
+  expect(JSON.parse(x.out).data.machines[1]).toEqual({id:"z",name:"Node One",os:"linux",sshUser:"alice",sshPort:22,relayNodeId:null,status:"not-ready",state:"not-ready",endpoint:{host:"host.local",port:22},checkedAt:"2026-01-01T00:00:00.000Z",errorCode:null});
   expect(calls).toHaveLength(1);expect(calls[0].method).toBe("GET");expect(calls[0].redirect).toBe("manual");expect(x.out).not.toContain("private-token");expect(x.out).not.toContain("private-relay");
  });
  test("table output and empty catalog",async()=>{
   const x=harness(async()=>Response.json({machines:[]}));expect(await runTeamStatusCli(["machines","--format","table"],env,x.io,fixed)).toBe(0);
-  expect(x.out).toBe("ID\tCATALOG\tSSH ENDPOINT\tCHECKED AT\n");
+  expect(x.out).toBe("ID\tSTATUS\tOS\tUSER\n");
  });
  test("config, usage and HTTP errors use stable exit codes and no secrets",async()=>{
   const cases:[string[],NodeJS.ProcessEnv,ChangeCliIO["fetch"],number,string][]=[
@@ -76,7 +77,7 @@ describe("status and machines",()=>{
   expect(JSON.parse(x.err).error.code).toBe("TIMEOUT");
  });
  test("rejects malformed and secret-bearing catalog data",async()=>{
-  for(const m of [{...machine,id:"private-token"},{...machine,host:"private-token"},{...machine,id:"bad\u001b[31m"},{...machine,checkedAt:"yesterday"}]){
+  for(const m of [{...machine,id:"private-token"},{...machine,name:"private-token"},{...machine,os:"private-token"},{...machine,host:"private-token"},{...machine,id:"bad\u001b[31m"},{...machine,checkedAt:"yesterday"}]){
    const x=harness(async()=>Response.json({machines:[m]}));expect(await runTeamStatusCli(["machines","--json"],env,x.io,fixed)).toBe(5);expect(JSON.parse(x.err).error.code).toBe("INVALID_RESPONSE");expect(x.err).not.toContain("private-token");
   }
  });

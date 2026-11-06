@@ -6,11 +6,15 @@ import { runProvisionCli } from "./provision-cli.ts";
 import { signedCliFetch, cliRegistration } from "./cli-registration.ts";
 import { createTeamNodeOnboard } from "./team-node-onboard.ts";
 import { userInfo } from "node:os";
-import { isAbsolute } from "node:path";
+import { isAbsolute, win32 } from "node:path";
 import { runServiceCli } from "./service-cli.ts";
 import { runPrimeProfileCli } from "./prime-profile-cli.ts";
 import { runTeamConfigCli } from "./team-config-cli.ts";
 import { runTeamStatusCli } from "./team-status-cli.ts";
+import { verifyClientAccess } from "./client-access.ts";
+import { fetchTransportCatalog, transportCatalogCandidates } from "./transport-catalog.ts";
+import type { CommandRunner } from "./readiness.ts";
+import { validSshUser, type SshRoute } from "./transports/ssh-routes.ts";
 import { resolveTeamCliEnv, resolveTeamSshEnv, resolveTeamSshUser } from "./team-cli-defaults.ts";
 import { runRouteConnectCli } from "./route-connect-cli.ts";
 import { startRouteAdvertiser } from "./route-advertiser.ts";
@@ -32,82 +36,38 @@ import type { DebugLogger } from "./debug-log.ts";
 import { createProcessDebugLogger } from "./process-debug-log.ts";
 export { debugLogWriterName, reapDebugLogs, createProcessDebugLogger } from "./process-debug-log.ts";
 
-const help = `Usage: bun src/cli.ts <status [--json|--format table]|machines [--json|--format table]|connect MACHINE_ID [USER]|team-config [--replace]|publish PROFILE_JSON|files hosts|files resources [HOST]|files list [HOST]|files read [HOST]|files write [HOST]|files inspect [HOST]|provision|service CONFIG_JSON|prime-profile ENV_ROOT [PRIME_ROOT]|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: envinhands <command> [arguments]
 
-publish: outbound strict SSH reverse publication of a local loopback service to
-         approved SSH host loopback only; private JSON profile, no public bind.
-files: optional HOST selects private ENVINHANDS_SHARED_HOSTS catalog; hosts lists IDs.
-       Discover selected roots, list one directory level, read/write work files; JSON resourceId/path, write also text and
-       expectedSha256 (null only creates missing file); signed writes, no blind overwrite.
-       write returns hostId/operationId/status; inspect reads that original operation.
-provision: explicit local owner-confirmed OS key/admin apply or revoke JSON stdin;
-           requires existing administrator context, identity env and durable spool.
-service: starts persistent control service from private absolute JSON config;
-         signed mutations required, config/DB preserved on SIGINT/SIGTERM.
-prime-profile: emits normal opt-in Prime settings with collaboration, audit, execution,
-               read-only files and explicit project skills; no credential or config writes.
-team-config: persist ENVINHANDS_URL/TOKEN and optional ENVINHANDS_MACHINE_ID for
-             prime-agent-team native mesh; --replace explicitly changes existing config.
-status/machines: show control and machine catalog status as JSON or --format table.
-connect: discover and probe candidate SSH routes, then open one interactive session;
-         uses explicit environment or private Team defaults; USER may come from Team identities.
-         Requires a trusted host key, SSH identity and a TTY.
-access: encrypted SSH forwarding to configured loopback control service;
-        one absolute JSON profile path, emits local URL, stop with SIGINT/SIGTERM.
-device: register reads JSON id/host and optional SSH fields; collects local OS/name.
-        Default registers pending metadata only. inventory includes failed/stale devices.
-collaborate: heartbeat|agents|send|pull|ack|machines|notes|add-note|
-        profile-notes list|profile-notes add|profile-notes reply.
-        JSON stdin except agents/machines; explicit actions, no automatic execution.
-verify-access: JSON stdin; verify this client SSH identity/path and real admin,
-        not the service identity. Non-ready exits 1 with explicit evidence.
-exec:   Authorized command JSON on stdin; --local for local argv execution.
-        Remote mode: strict SSH path probe/fallback,
-        executes once, leaves local signed intent/outcome in ENVINHANDS_CHANGE_SPOOL.
-        Output/exit is evidence, not a promise of rollback or no remote effects.
-change: JSON stdin for register/record, JSON stdout receipts. ENVINHANDS_URL
-        and ENVINHANDS_TOKEN required; HTTPS or encrypted loopback forward only.
-        enqueue accepts {registration,change} on stdin, stores locally offline.
-        flush uploads pending records. Both require absolute ENVINHANDS_CHANGE_SPOOL.
-        Explicit records are not automatic capture of every resource mutation.
-register: --id ID --name NAME --host HOST --os OS --ssh-user USER [--ssh-port PORT] [--relay-node NODE_ID]
-          ENVINHANDS_URL and ENVINHANDS_TOKEN required. HTTPS required except
-          loopback HTTP; ENVINHANDS_ALLOW_INSECURE_HTTP=1 permits other HTTP
-          with a warning. Registration may remain pending; no keys or sudo are configured.
-server: ENVINHANDS_TOKEN (required), ENVINHANDS_HOST (default 0.0.0.0),
-        ENVINHANDS_PORT (default 8787), ENVINHANDS_DB (default envinhands.sqlite).
-relay:  ENVINHANDS_RELAY_SECRET (required), ENVINHANDS_RELAY_HOST (default 0.0.0.0),
-        ENVINHANDS_RELAY_PORT (default 8788).
-node:   ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET (required),
-        ENVINHANDS_SSH_PORT (default 22; local 127.0.0.1 only).
-        With control URL and token, Linux/macOS automatically synchronize team
-        keys with full-team trust in the current user's home. Set
-        ENVINHANDS_TEAM_AUTO_KEYS=0 to disable. ENVINHANDS_SSH_HOST_PUBLIC_KEY
-        can override the absolute public host-key path; verify sshd uses it.
-        Windows automatic key synchronization is not implemented. Synchronization
-        does not establish SSH or administrator readiness.
-proxy:  ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET (required).
-        Use as an OpenSSH ProxyCommand; stdout carries SSH bytes only.
-tmux:   ENVINHANDS_RELAY_URL and ENVINHANDS_RELAY_SECRET required. Set
-        ENVINHANDS_PROXY_BINARY to the absolute path of the compiled CLI when
-        running from source. Requires interactive stdin and stdout, local ssh,
-        remote ssh/tmux, and a host key verified out of band. Windows unsupported.
-        A disconnected connection cannot establish the task outcome.
+Commands:
+  status [--json|--format table]       Show team status
+  machines [--json|--format table]     List machines
+  connect MACHINE_ID [USER]            Open an SSH session
+  exec [--local]                      Execute a command from JSON stdin
+  register FLAGS                      Register and verify a machine
+  device register|inventory           Register or list devices
+  collaborate COMMAND                 Use collaboration commands
+  files COMMAND [HOST]                Use shared files
+  change COMMAND                      Record or upload changes
+  verify-access [sync]                Verify client access
+  team-config [--replace]             Store team settings
+  node NODE_ID                        Start a relay node
+  server                              Start the control server
+  relay                               Start the relay server
+  proxy NODE_ID                       Open a relay proxy
+  tmux NODE_ID SESSION_KEY [USER]      Open a tmux session
+  publish PROFILE_JSON                Publish a service
+  provision                           Apply local provisioning
+  service CONFIG_JSON                 Start the control service
+  prime-profile ENV_ROOT [PRIME_ROOT]  Generate a Prime profile
+  access PROFILE_JSON                 Forward the control service
 
-Debug metadata JSONL: ENVINHANDS_LOG_DIR selects a private parent directory;
-otherwise ~/.local/state/envinhands is used. Each process gets a separate directory.
-On startup, verified stopped-writer directories are pruned after seven days or
-when verified logs exceed 256 MiB. Live and unsafe entries are never deleted. Cleanup is limited to the same
-Linux boot and PID namespace; older/unknown namespaces are retained. Therefore
-these limits are best effort, not a global disk quota.
-Logging is unavailable on Windows until a secure ACL implementation exists;
-the service continues with an explicit warning.
+Register: --id ID --name NAME --host HOST --os OS --ssh-user USER
+          [--ssh-port PORT] [--relay-node NODE_ID]
 
-Pass secrets in environment variables, never in command-line arguments.
-Plain ws:// exposes the relay secret and traffic: use only on a trusted network.
-For public networks, use wss:// with TLS termination. The server also needs HTTPS
-termination on untrusted networks. This prototype uses a shared secret; TLS alone
-does not provide per-node authorization. Node team synchronization may configure SSH keys; it does not configure sudo.
+Environment: ENVINHANDS_URL, ENVINHANDS_TOKEN, ENVINHANDS_MACHINE_ID,
+  ENVINHANDS_RELAY_URL, ENVINHANDS_RELAY_SECRET, ENVINHANDS_PROXY_BINARY,
+  ENVINHANDS_SSH_IDENTITY, ENVINHANDS_SSH_KNOWN_HOSTS,
+  ENVINHANDS_TEAM_AUTO_KEYS, ENVINHANDS_SSH_HOST_PUBLIC_KEY.
 `;
 
 export interface SignalSource {
@@ -120,6 +80,8 @@ export interface CliDependencies {
   startNode: typeof startNodeRuntime;
   startRouteAdvertiser: typeof startRouteAdvertiser;
   createTeamNodeOnboard: typeof createTeamNodeOnboard;
+  verifyClientAccess: typeof verifyClientAccess;
+  clientAccessRunner?: CommandRunner;
   currentUserHome: () => string;
   startProxy: typeof startSshProxy;
   signals: SignalSource;
@@ -139,7 +101,7 @@ export interface CliDependencies {
 const defaults: CliDependencies = {
   startServer: startAgentBusServer, startRelay: createRelayServer,
   startNode: startNodeRuntime, startRouteAdvertiser, startProxy: startSshProxy,
-  createTeamNodeOnboard, currentUserHome: () => userInfo().homedir,
+  createTeamNodeOnboard, verifyClientAccess, currentUserHome: () => userInfo().homedir,
   signals: process, stderr: process.stderr, stdout: process.stdout,
   fetch: globalThis.fetch, requestTimeoutMs: 20_000,
   platform: process.platform, compiled: Bun.main.startsWith("/$bunfs/"), execPath: process.execPath,
@@ -210,7 +172,10 @@ function registerArgs(args: string[]): Record<string, string | number> {
   }
   if (!["--id", "--name", "--host", "--os", "--ssh-user"].every(k => values[k]))
     throw new UsageError("Missing register arguments. Use --help for usage.");
-  if (!nodeIdPattern.test(values["--id"]!) || !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(values["--ssh-user"]!) ||
+  const validUser = values["--os"]!.toLowerCase() === "windows"
+    ? validSshUser(values["--ssh-user"])
+    : /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(values["--ssh-user"]!);
+  if (!nodeIdPattern.test(values["--id"]!) || !validUser ||
       values["--name"]!.trim().length === 0 || values["--name"]!.length > 200 ||
       values["--host"]!.trim().length === 0 || values["--host"]!.length > 253 ||
       values["--os"]!.trim().length === 0 || values["--os"]!.length > 100)
@@ -239,11 +204,14 @@ function apiUrl(env: NodeJS.ProcessEnv, warn: (s: string) => void): string {
   return url.origin;
 }
 
-async function responseJson(response: Response): Promise<unknown> {
+async function responseJson(response: Response, signal?: AbortSignal): Promise<unknown> {
   const declared = response.headers.get("content-length");
   if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_RESPONSE_BYTES)) throw new Error("Invalid response size");
   if (!response.body) throw new Error("Empty response");
   const reader = response.body.getReader();
+  const abort = () => { void reader.cancel().catch(() => {}); };
+  signal?.addEventListener("abort", abort, {once:true});
+  if (signal?.aborted) abort();
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -254,43 +222,101 @@ async function responseJson(response: Response): Promise<unknown> {
       if (size > MAX_RESPONSE_BYTES) { void reader.cancel().catch(() => {}); throw new Error("Response too large"); }
       chunks.push(value);
     }
-  } finally { reader.releaseLock(); }
+  } finally { signal?.removeEventListener("abort", abort); reader.releaseLock(); }
+  if (signal?.aborted) throw new Error("Aborted");
   const data = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.length; }
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(data));
 }
 
-async function register(args: string[], env: NodeJS.ProcessEnv, deps: CliDependencies): Promise<number> {
+class RegisterError extends Error {
+  constructor(readonly code: string) { super(code); }
+}
+function registerFailure(deps: CliDependencies, code: string): number {
+  deps.stderr.write(JSON.stringify({ok:false,error:{code}}) + "\n"); return 1;
+}
+/** Run a noninteractive SSH probe with the caller's environment, not global state. */
+function registerRunner(env: NodeJS.ProcessEnv): CommandRunner {
+  const childEnv = {...env};
+  delete childEnv.ENVINHANDS_TOKEN;
+  delete childEnv.ENVINHANDS_ACCEPTANCE_API_KEY;
+  return (command, args, timeoutMs) => new Promise(resolve => {
+    let child: ReturnType<typeof spawn>;
+    try { child = spawn(command, [...args], {shell:false,stdio:"ignore",env:childEnv}); }
+    catch { resolve({exitCode:null}); return; }
+    let settled = false;
+    const finish = (exitCode:number|null) => { if (settled) return; settled=true; clearTimeout(timer); resolve({exitCode}); };
+    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} finish(null); }, timeoutMs);
+    child.once("error", () => finish(null)); child.once("close", code => finish(code));
+  });
+}
+async function register(args: string[], env: NodeJS.ProcessEnv, deps: CliDependencies, home:string): Promise<number> {
   const data = registerArgs(args);
-  const origin = apiUrl(env, text => deps.stderr.write(text + "\n"));
+  const origin = apiUrl(env, () => {});
   const token = required(env, "ENVINHANDS_TOKEN");
+  if (/\s|[\x00-\x1f\x7f]/.test(token)) throw new RegisterError("E_TEAM_CONFIG");
   const signedFetch = signedCliFetch(env, deps.fetch);
-  if (/\s|[\x00-\x1f\x7f]/.test(token)) throw new UsageError("Invalid ENVINHANDS_TOKEN.");
-  const request = async (path: string, body?: string): Promise<{ status: number; data: unknown }> => {
+  const request = async (path: string, method:"GET"|"POST", body?: string): Promise<{ status: number; data: unknown }> => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Timeout")); }, deps.requestTimeoutMs); });
     try {
       return await Promise.race([(async () => {
-        const response = await signedFetch(origin + path, { method: "POST", redirect: "error", signal: controller.signal,
-          headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, body });
-        if (response.status === 409) { void response.body?.cancel().catch(() => {}); return { status: 409, data: null }; }
-        if (!response.ok) { void response.body?.cancel().catch(() => {}); return { status: response.status, data: null }; }
-        return { status: response.status, data: await responseJson(response) };
-      })(), timeout]);
-    } finally { if (timer !== undefined) clearTimeout(timer); }
+        const response = await signedFetch(origin + path, {method, redirect:"error", signal:controller.signal,
+          headers: {authorization:`Bearer ${token}`, ...(body === undefined ? {} : {"content-type":"application/json"})}, body});
+        if (!response.ok) { void response.body?.cancel().catch(() => {}); return {status:response.status,data:null}; }
+        return {status:response.status,data:await responseJson(response, controller.signal)};
+      })(), new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new RegisterError("E_NETWORK"));},deps.requestTimeoutMs);})]);
+    } catch (err) { if (err instanceof RegisterError) throw err; throw new RegisterError("E_NETWORK"); }
+    finally { if (timer !== undefined) clearTimeout(timer); }
   };
-  const created = await request("/v1/machines", JSON.stringify(data));
-  if (created.status === 409) { deps.stderr.write("Registration not-ready: machine already exists (409); no changes made. Confirm its state before retrying.\n"); return 1; }
-  if (created.status !== 202) { deps.stderr.write("Registration not-ready: server did not accept the request; a pending record may exist.\n"); return 1; }
-  const verified = await request(`/v1/machines/${encodeURIComponent(String(data.id))}/verify`);
-  const value = verified.data as { machine?: { status?: unknown } } | null;
-  if (verified.status !== 200 || value?.machine?.status !== "ready") {
-    deps.stderr.write("Registration not-ready: verification failed or is unsupported; the record may remain pending. No automatic key or sudo setup was performed.\n"); return 1;
-  }
-  deps.stderr.write("Registration incomplete: server SSH/admin verification passed, but each agent's SSH identity and administrator access remain unverified. The machine record was kept. Configure the agent key and host trust, then run verify-access from each agent; no key or sudo setup was performed automatically.\n");
-  return 1;
+  const created = await request("/v1/machines", "POST", JSON.stringify(data));
+  if (created.status === 409) {
+    const list = await request("/v1/machines?includePending=true&includeNotReady=true", "GET");
+    if (list.status !== 200 || !list.data || typeof list.data !== "object" || !Array.isArray((list.data as {machines?:unknown}).machines)) throw new RegisterError("E_DIRECTORY");
+    const matches = ((list.data as {machines:unknown[]}).machines).filter((x): x is Record<string,unknown> => !!x && typeof x === "object" && (x as Record<string,unknown>).id === data.id);
+    const existing = matches[0];
+    if (matches.length !== 1 || !existing) throw new RegisterError("E_DIRECTORY");
+    if ((existing.relayNodeId ?? null) !== (data.relayNodeId ?? null)) throw new RegisterError("E_NODE_CONFLICT");
+    // Keep the existing record unchanged and verify its actual endpoint.
+    if (typeof existing.host !== "string" || typeof existing.os !== "string" ||
+        typeof existing.sshUser !== "string" || typeof existing.name !== "string" ||
+        !Number.isInteger(existing.sshPort)) throw new RegisterError("E_DIRECTORY");
+    try {
+      const actual = registerArgs(["--id",String(data.id),"--name",existing.name,"--host",existing.host,
+        "--os",existing.os,"--ssh-user",existing.sshUser,"--ssh-port",String(existing.sshPort),
+        ...(typeof existing.relayNodeId === "string" ? ["--relay-node",existing.relayNodeId] : [])]);
+      Object.assign(data,actual);
+    } catch { throw new RegisterError("E_DIRECTORY"); }
+  } else if (created.status !== 202) throw new RegisterError(created.status === 401 || created.status === 403 ? "E_AUTH" : "E_REGISTER");
+  const verified = await request(`/v1/machines/${encodeURIComponent(String(data.id))}/verify`, "POST");
+  const value = verified.data as {machine?:{status?:unknown}} | null;
+  if (verified.status !== 200 || value?.machine?.status !== "ready") throw new RegisterError("E_SERVER_VERIFY");
+  const ssh = await resolveTeamSshEnv({env,home,platform:deps.platform});
+  if (!ssh.env.ENVINHANDS_SSH_IDENTITY) throw new RegisterError("E_SSH_KEY");
+  if (!ssh.env.ENVINHANDS_SSH_KNOWN_HOSTS) throw new RegisterError("E_HOSTKEY");
+  const os = String(data.os).toLowerCase();
+  if (os !== "linux" && os !== "macos" && os !== "windows") throw new RegisterError("E_OS");
+  const access = {user:String(data.sshUser),hostKeyAlias:String(data.id),identityFile:ssh.env.ENVINHANDS_SSH_IDENTITY,knownHostsFile:ssh.env.ENVINHANDS_SSH_KNOWN_HOSTS};
+  const direct:SshRoute={id:"registered-direct",host:String(data.host),port:Number(data.sshPort ?? 22)};
+  let routes:SshRoute[]=[direct];
+  const binary=ssh.env.ENVINHANDS_PROXY_BINARY ?? (deps.compiled ? deps.execPath : undefined);
+  try {
+    const ac=new AbortController(); let timer:ReturnType<typeof setTimeout>|undefined;
+    try {
+      const page=await Promise.race([fetchTransportCatalog(origin,token,String(data.id),(url,init)=>deps.fetch(url,{...init,signal:ac.signal})),new Promise<never>((_,reject)=>{timer=setTimeout(()=>{ac.abort();reject(new Error());},deps.requestTimeoutMs);})]);
+      const relayReady=!!binary && (deps.platform === "win32" ? win32.isAbsolute(binary) : isAbsolute(binary)) && !/[%\x00-\x1f\x7f]/.test(binary) && !!env.ENVINHANDS_RELAY_URL && !!env.ENVINHANDS_RELAY_SECRET;
+      const filtered={...page,routes:page.routes.filter(r=>r.kind!=="relay" || relayReady)};
+      const found=transportCatalogCandidates(filtered,String(data.id),{access,relayBinaryPath:relayReady ? binary! : "/unused-envinhands-proxy"});
+      routes=[...found.routes.filter(r=>r.id!==direct.id),direct];
+    } finally {if(timer!==undefined)clearTimeout(timer);ac.abort();}
+  } catch { /* A missing route catalog does not remove the registered direct route. */ }
+  try {
+    const result=await deps.verifyClientAccess({registration:cliRegistration(env),targetMachineId:String(data.id),os,routes,access,priority:routes.map(r=>r.id),totalBudgetMs:60000},{runner:deps.clientAccessRunner ?? registerRunner(ssh.env)});
+    if (!result.ready || result.status !== "ready") throw new RegisterError("E_SSH");
+  } catch (err) { if (err instanceof RegisterError) throw err; throw new RegisterError("E_SSH"); }
+  deps.stdout.write(JSON.stringify({ok:true,data:{id:data.id,status:"ready"},meta:{}})+"\n");
+  return 0;
 }
 
 /** Run a command. Dependencies and environment are injectable for tests. */
@@ -453,10 +479,21 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
     }
   }
   if (command === "register") {
-    try { return await register(args.slice(1), env, deps); }
+    try {
+      const team = await teamEnv();
+      if (team.diagnostic) return registerFailure(deps, team.diagnostic);
+      if (!team.env.ENVINHANDS_URL || !team.env.ENVINHANDS_TOKEN) return registerFailure(deps, "E_TEAM_CONFIG");
+      const actor = {...team.env};
+      // The actor machine is the local client, never the target being registered.
+      if (!actor.ENVINHANDS_MACHINE_ID) throw new UsageError("E_ACTOR: set ENVINHANDS_MACHINE_ID.");
+      actor.ENVINHANDS_AGENT_ID ??= "cli-" + createHash("sha256").update(actor.ENVINHANDS_MACHINE_ID).digest("hex");
+      actor.ENVINHANDS_SESSION_ID ??= randomUUID();
+      actor.ENVINHANDS_AUDIT_SIGNATURE ??= "EnvInHands CLI registration";
+      try { cliRegistration(actor); } catch { throw new UsageError("E_ACTOR: invalid client identity."); }
+      return await register(args.slice(1), actor, deps, teamHome);
+    }
     catch (err) {
-      error(err instanceof UsageError ? err.message : "Registration not-ready: request failed or timed out; a pending record may exist. No changes were rolled back.");
-      return 1;
+      return registerFailure(deps, err instanceof RegisterError ? err.code : err instanceof UsageError && err.message.startsWith("E_ACTOR") ? "E_ACTOR" : err instanceof UsageError ? "E_USAGE" : "E_REGISTER");
     }
   }
   if (args.length === 1 && (command === "--help" || command === "-h")) { deps.stderr.write(help); return 0; }

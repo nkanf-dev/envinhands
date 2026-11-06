@@ -8,6 +8,8 @@ import { startAgentBusServer } from "../src/server.ts";
 import { createRelayServer } from "../src/relay.ts";
 import { writeTeamPrimeConfig } from "../src/team-prime-config.ts";
 import { createHash } from "node:crypto";
+import { verifyClientAccess, UNIX_ROOT_SHELL_CHECK } from "../src/client-access.ts";
+import { createMachineApi } from "../src/machine-api.ts";
 
 const testLogs = mkdtempSync(join(tmpdir(), "env-cli-logs-"));
 afterAll(() => rmSync(testLogs, { recursive: true, force: true }));
@@ -38,12 +40,13 @@ describe("CLI validation and isolation", () => {
     expect(await runCli(["node", "n"], { ENVINHANDS_RELAY_URL: "wss://example.org", ENVINHANDS_RELAY_SECRET: "s", ENVINHANDS_SSH_PORT: "0" }, c)).toBe(1);
     expect(await runCli(["relay"], { ENVINHANDS_RELAY_SECRET: "s", ENVINHANDS_RELAY_PORT: "65536" }, c)).toBe(1);
   });
-  test("help explains TLS, stdout and no automatic key setup", async () => {
+  test("help lists core commands and Team SSH configuration", async () => {
     const c = context();
     expect(await runCli(["--help"], {}, c)).toBe(0);
-    expect(c.output()).toContain("wss://");
-    expect(c.output()).toContain("stdout carries SSH bytes only");
-    expect(c.output()).toContain("does not configure sudo");
+    expect(c.output()).toContain("register FLAGS");
+    expect(c.output()).toContain("connect MACHINE_ID");
+    expect(c.output()).toContain("ENVINHANDS_SSH_IDENTITY");
+    expect(c.output()).toContain("ENVINHANDS_SSH_KNOWN_HOSTS");
   });
   test("proxy passes environment settings and hides errors, never writes stdout", async () => {
     const c = context();
@@ -140,68 +143,154 @@ test("unexpected runtime failure closes the runtime without leaking errors", asy
 
 describe("register CLI", () => {
   const args = ["register", "--id", "node-1", "--name", "Node One", "--host", "host.example", "--os", "linux", "--ssh-user", "admin", "--ssh-port", "2222"];
-  const env = { ENVINHANDS_URL: "https://example.org", ENVINHANDS_TOKEN: "secret-register-token", ENVINHANDS_AGENT_ID: "cli-test", ENVINHANDS_MACHINE_ID: "client", ENVINHANDS_SESSION_ID: "cli-session", ENVINHANDS_AUDIT_SIGNATURE: "CLI test" };
+  const env = { ENVINHANDS_URL: "https://example.org", ENVINHANDS_TOKEN: "secret-register-token", ENVINHANDS_AGENT_ID: "cli-test", ENVINHANDS_MACHINE_ID: "client", ENVINHANDS_SESSION_ID: "cli-session", ENVINHANDS_AUDIT_SIGNATURE: "CLI test", ENVINHANDS_SSH_IDENTITY: "/tmp/test-client-key", ENVINHANDS_SSH_KNOWN_HOSTS: "/tmp/test-known-hosts" };
+  const machine = { id:"node-1", name:"Node One", host:"host.example", os:"linux", sshUser:"admin", sshPort:2222, relayNodeId:null };
   function ctx() { let stdout = ""; const c = context(); return { ...c, stdout: { write(s: string) { stdout += s; } }, out: () => stdout }; }
   function json(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }); }
-  test("does not claim team readiness from server-only verification", async () => {
-    const c = ctx(); const calls: Array<{ url: string; init?: RequestInit }> = [];
-    const fake: CliDependencies["fetch"] = async (url, init) => { calls.push({ url: String(url), init }); return calls.length === 1 ? json({ machine: { status: "pending" } }, 202) : json({ machine: { status: "ready" }, verificationScope: "server" }); };
-    expect(await runCli(args, env, { ...c, fetch: fake })).toBe(1);
-    expect(c.out()).not.toContain("successful");
-    expect(c.output()).toContain("each agent's SSH identity");
-    expect(calls.map(x => x.url)).toEqual(["https://example.org/v1/machines", "https://example.org/v1/machines/node-1/verify"]);
-    expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({ id: "node-1", name: "Node One", host: "host.example", os: "linux", sshUser: "admin", sshPort: 2222 });
+  // Use the real verifier but replace SSH and key fingerprinting. No host, key,
+  // or sudo settings on the machine running the tests are accessed.
+  function verifier(exitCodes: number[] = [0, 0]) {
+    const commands: Array<{ command:string; args:readonly string[] }> = [];
+    const optionsSeen: Array<Parameters<typeof verifyClientAccess>[0]> = [];
+    const verify: typeof verifyClientAccess = (options, dependencies) => {
+      optionsSeen.push(options);
+      return verifyClientAccess(options, {
+        ...dependencies, fingerprint: async () => "SHA256:" + "A".repeat(43),
+        runner: async (command, args) => { commands.push({command, args}); return {exitCode:exitCodes[commands.length - 1] ?? 0}; },
+      });
+    };
+    return {verify, commands, optionsSeen};
+  }
+  test("server readiness plus real local client verification gives JSON success", async () => {
+    const c = ctx(); const calls: Array<{url:string; init?:RequestInit}> = []; const v = verifier();
+    const fake: CliDependencies["fetch"] = async (url, init) => {
+      calls.push({url:String(url), init}); const path = new URL(String(url)).pathname;
+      if (path === "/v1/machines") return json({machine:{...machine,status:"pending"}}, 202);
+      if (path.endsWith("/verify")) return json({machine:{...machine,status:"ready"},verificationScope:"server"});
+      return json({error:"not found"}, 404);
+    };
+    expect(await runCli(args, env, { ...c, fetch:fake, verifyClientAccess:v.verify })).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({ok:true,data:{id:"node-1",status:"ready"},meta:{}});
+    expect(c.output()).toBe("");
+    expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({id:"node-1",name:"Node One",host:"host.example",os:"linux",sshUser:"admin",sshPort:2222});
     expect(calls[0]!.init!.redirect).toBe("error");
-    expect(calls[1]!.init!.body).toBeUndefined();
+    expect(calls.some(x=>x.url.endsWith("/v1/machines/node-1/verify") && x.init?.body === undefined)).toBe(true);
+    expect(v.commands.length).toBe(2);
+    expect(v.commands[0]!.args.slice(-2)).toEqual(["echo", "envinhands-probe"]);
+    expect(v.commands[1]!.args.at(-1)).toBe(UNIX_ROOT_SHELL_CHECK);
     expect(c.out() + c.output()).not.toContain(env.ENVINHANDS_TOKEN);
   });
-  test("passes a validated relay node to the registration API", async () => {
-    const c = ctx(); const calls: Array<{ url: string; init?: RequestInit }> = [];
-    const fake: CliDependencies["fetch"] = async (url, init) => { calls.push({ url: String(url), init }); return calls.length === 1 ? json({ machine: { status: "pending" } }, 202) : json({ machine: { status: "ready" } }); };
-    expect(await runCli([...args, "--relay-node", "node-1"], env, { ...c, fetch: fake })).toBe(1);
-    expect(JSON.parse(String(calls[0]!.init!.body)).relayNodeId).toBe("node-1");
-    expect(await runCli([...args, "--relay-node", "../unsafe"], env, { ...c, fetch: fake })).toBe(1);
-    expect(calls.length).toBe(2);
+  test("repeated ID reads existing record, never overwrites, and verifies only a matching relay", async () => {
+    for (const existingRelay of ["relay-1", "different-relay"]) {
+      const c = ctx(); const calls: Array<{url:string; method:string}> = []; const v = verifier();
+      // Only the relay must match. Probe the validated server record, not the
+      // new command's host, OS, user, or port.
+      const existing = {...machine, name:"Server Name", host:"old.example", os:"macos", sshUser:"olduser", sshPort:2022, relayNodeId:existingRelay};
+      const fake: CliDependencies["fetch"] = async (url, init) => {
+        const u = new URL(String(url)); const method = init?.method ?? "GET"; calls.push({url:String(url),method});
+        if (u.pathname === "/v1/machines" && method === "POST") return json({error:"exists"},409);
+        if (u.pathname === "/v1/machines" && method === "GET") return json({machines:[existing]});
+        if (u.pathname.endsWith("/verify")) return json({machine:{...existing,status:"ready"}});
+        return json({},404);
+      };
+      const result = await runCli([...args,"--relay-node","relay-1"],env,{...c,fetch:fake,verifyClientAccess:v.verify});
+      const listed = calls.find(x=>x.method === "GET" && new URL(x.url).pathname === "/v1/machines");
+      expect(listed).toBeDefined(); expect(new URL(listed!.url).searchParams.get("includePending")).toBe("true");
+      expect(new URL(listed!.url).searchParams.get("includeNotReady")).toBe("true");
+      expect(calls.filter(x=>x.method === "POST" && new URL(x.url).pathname === "/v1/machines")).toHaveLength(1);
+      expect(calls.some(x=>["PUT","PATCH","DELETE"].includes(x.method))).toBe(false);
+      if (existingRelay === "relay-1") {
+        expect(result).toBe(0); expect(JSON.parse(c.out()).ok).toBe(true); expect(v.commands).toHaveLength(2);
+        expect(v.optionsSeen).toHaveLength(1);
+        expect(v.optionsSeen[0]).toMatchObject({os:"macos",access:{user:"olduser"},routes:[{host:"old.example",port:2022}]});
+        expect(v.commands[0]!.args).toContain("old.example"); expect(v.commands[0]!.args).toContain("olduser");
+        expect(v.commands[0]!.args).toContain("2022");
+        expect(calls.some(x=>x.url.endsWith("/verify"))).toBe(true);
+      } else {
+        expect(result).not.toBe(0); expect(c.out()).toBe(""); expect(JSON.parse(c.output())).toMatchObject({ok:false,error:{code:"E_NODE_CONFLICT"}});
+        expect(calls.some(x=>x.url.endsWith("/verify"))).toBe(false); expect(v.commands).toHaveLength(0);
+      }
+      expect(c.out()+c.output()).not.toContain(env.ENVINHANDS_TOKEN);
+    }
   });
-  test("pending and unsupported verification fail without deleting record", async () => {
-    const c = ctx(); const calls: string[] = [];
-    const fake: CliDependencies["fetch"] = async (url) => { calls.push(String(url)); return calls.length === 1 ? json({ machine: { status: "pending" } }, 202) : json({ machine: { status: "pending" }, verificationScope: "server" }); };
-    expect(await runCli(args, env, { ...c, fetch: fake })).toBe(1);
-    expect(c.output()).toContain("not-ready"); expect(c.out()).not.toContain("successful"); expect(calls.length).toBe(2);
+  test("repeated ID rejects invalid or ambiguous existing directory records before verifying", async () => {
+    for (const records of [
+      [{...machine,sshUser:"bad;user"}], [{...machine,sshPort:0}],
+      [machine,machine], [],
+    ]) {
+      const c=ctx(), v=verifier(); const calls:string[]=[];
+      const fake: CliDependencies["fetch"] = async (url,init)=>{
+        const u=new URL(String(url)); calls.push(`${init?.method ?? "GET"} ${u.pathname}`);
+        if (u.pathname === "/v1/machines" && init?.method === "POST") return json({},409);
+        if (u.pathname === "/v1/machines") return json({machines:records});
+        return json({},404);
+      };
+      expect(await runCli(args,env,{...c,fetch:fake,verifyClientAccess:v.verify})).not.toBe(0);
+      expect(JSON.parse(c.output())).toMatchObject({ok:false,error:{code:"E_DIRECTORY"}});
+      expect(c.out()).toBe(""); expect(v.commands).toHaveLength(0);
+      expect(calls.some(x=>x.endsWith("/verify"))).toBe(false);
+    }
   });
-  test("conflict never verifies or alters existing record", async () => {
-    const c = ctx(); let calls = 0;
-    const fake: CliDependencies["fetch"] = async () => { calls++; return json({ error: "conflict" }, 409); };
-    expect(await runCli(args, env, { ...c, fetch: fake })).toBe(1);
-    expect(calls).toBe(1); expect(c.output()).toContain("already exists");
+  test("server failure and failed client admin check return deterministic JSON errors", async () => {
+    for (const mode of ["server", "client", "throw"] as const) {
+      const outputs: string[] = [];
+      for (let attempt=0; attempt<2; attempt++) {
+        const c = ctx(); const v = verifier([0,1]);
+        const fake: CliDependencies["fetch"] = async (url) => {
+          const path = new URL(String(url)).pathname;
+          if (mode === "throw") throw new Error(env.ENVINHANDS_TOKEN);
+          if (path === "/v1/machines") return json({machine:{...machine,status:"pending"}},202);
+          if (path.endsWith("/verify")) return json({machine:{...machine,status:mode === "server" ? "pending" : "ready"}});
+          return json({},404);
+        };
+        expect(await runCli(args,env,{...c,fetch:fake,verifyClientAccess:v.verify})).not.toBe(0);
+        expect(c.out()).toBe(""); const error=JSON.parse(c.output());
+        expect(error.ok).toBe(false); expect(typeof error.error.code).toBe("string");
+        expect(c.output()).not.toContain(env.ENVINHANDS_TOKEN); outputs.push(c.output());
+        if (mode === "server") expect(v.commands).toHaveLength(0);
+        if (mode === "client") expect(v.commands).toHaveLength(2);
+      }
+      expect(outputs[0]).toBe(outputs[1]);
+    }
   });
-  test("rejects unsafe and injected URLs before fetching, allows explicit insecure override with warning", async () => {
-    let calls = 0; const fake: CliDependencies["fetch"] = async () => { calls++; return json({}, 500); };
-    for (const url of ["http://192.168.1.1", "https://user:secret-register-token@example.org", "https://example.org/path", "https://example.org/?q=x", "https://example.org/#x", "https://example.org\\@evil.com"]) {
-      const c = ctx(); expect(await runCli(args, { ...env, ENVINHANDS_URL: url }, { ...c, fetch: fake })).toBe(1);
+  test("rejects malformed flags and URLs without network access or secret leakage", async () => {
+    for (const [argv, url] of [[args,"https://user:secret-register-token@example.org"], [[...args,"--id","other"],env.ENVINHANDS_URL], [args.map(x=>x === "2222" ? "22;evil" : x),env.ENVINHANDS_URL]] as Array<[string[],string]>) {
+      const c=ctx(); let calls=0;
+      expect(await runCli(argv,{...env,ENVINHANDS_URL:url},{...c,fetch:async()=>{calls++;throw new Error("unexpected");}})).not.toBe(0);
+      expect(calls).toBe(0); expect(c.out()).toBe(""); expect(JSON.parse(c.output()).ok).toBe(false);
       expect(c.output()).not.toContain(env.ENVINHANDS_TOKEN);
     }
-    expect(calls).toBe(0);
-    const c = ctx(); await runCli(args, { ...env, ENVINHANDS_URL: "http://192.168.1.1", ENVINHANDS_ALLOW_INSECURE_HTTP: "1" }, { ...c, fetch: fake });
-    expect(c.output()).toContain("Warning: insecure HTTP"); expect(calls).toBe(1);
   });
-  test("rejects option/path injection, duplicates and invalid ports without leaking arguments", async () => {
-    const c = ctx(); let calls = 0; const fake: CliDependencies["fetch"] = async () => { calls++; return json({}, 202); };
-    for (const bad of [[...args, "--id", "other"], args.map(x => x === "node-1" ? "../evil?x=1" : x), args.map(x => x === "2222" ? "22;evil" : x), [...args, "--token", env.ENVINHANDS_TOKEN]])
-      expect(await runCli(bad, env, { ...c, fetch: fake })).toBe(1);
-    expect(calls).toBe(0); expect(c.output()).not.toContain(env.ENVINHANDS_TOKEN);
+  test("loopback machine API persists a repeated ID without overwriting it", async () => {
+    const dir=mkdtempSync(join(tmpdir(),"env-register-api-")); let serverChecks=0;
+    const api=createMachineApi({dbPath:join(dir,"machines.sqlite"),token:env.ENVINHANDS_TOKEN,
+      verifier:async()=>{serverChecks++; return {status:"ready",ready:true,message:"fixture"};}});
+    const server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:req=>api.fetch(req)});
+    const localEnv={...env,ENVINHANDS_URL:`http://127.0.0.1:${server.port}`};
+    try {
+      for (let n=0; n<2; n++) {
+        const c=ctx(), v=verifier();
+        const input = n === 0 ? args : args.map(x=>({"host.example":"new.example","linux":"macos","admin":"newuser","2222":"3333"} as Record<string,string>)[x] ?? x);
+        expect(await runCli([...input,"--relay-node","relay-1"],localEnv,{...c,verifyClientAccess:v.verify})).toBe(0);
+        expect(JSON.parse(c.out())).toMatchObject({ok:true,data:{id:"node-1",status:"ready"}});
+        expect(c.output()).toBe(""); expect(v.commands).toHaveLength(2);
+        expect(v.optionsSeen[0]).toMatchObject({os:"linux",access:{user:"admin"},routes:[{host:"host.example",port:2222}]});
+      }
+      const c=ctx(), v=verifier();
+      expect(await runCli([...args,"--relay-node","relay-2"],localEnv,{...c,verifyClientAccess:v.verify})).not.toBe(0);
+      expect(JSON.parse(c.output())).toMatchObject({ok:false,error:{code:"E_NODE_CONFLICT"}});
+      expect(c.out()).toBe(""); expect(v.commands).toHaveLength(0); expect(serverChecks).toBe(2);
+      const response=await fetch(`${localEnv.ENVINHANDS_URL}/v1/machines?includePending=true&includeNotReady=true`,{headers:{authorization:`Bearer ${env.ENVINHANDS_TOKEN}`}});
+      const page=await response.json() as {machines:Array<Record<string,unknown>>};
+      expect(page.machines).toHaveLength(1); expect(page.machines[0]).toMatchObject({...machine,relayNodeId:"relay-1"});
+    } finally {server.stop(true);api.close();rmSync(dir,{recursive:true,force:true});}
   });
-  test("timeouts and thrown errors are redacted, even if fetch ignores abort", async () => {
-    const c = ctx(); let signal: AbortSignal | undefined;
-    const fake: CliDependencies["fetch"] = async (_url, init) => { signal = init?.signal ?? undefined; return await new Promise<Response>(() => {}); };
-    expect(await runCli(args, env, { ...c, fetch: fake, requestTimeoutMs: 10 })).toBe(1);
-    expect(signal?.aborted).toBe(true); expect(c.output()).toContain("not-ready");
-    const fail: CliDependencies["fetch"] = async () => { throw new Error(env.ENVINHANDS_TOKEN); };
-    expect(await runCli(args, env, { ...c, fetch: fail })).toBe(1); expect(c.output()).not.toContain(env.ENVINHANDS_TOKEN);
-  });
-  test("oversized response fails closed", async () => {
-    const c = ctx(); const fake: CliDependencies["fetch"] = async () => new Response("x".repeat(16385), { status: 202 });
-    expect(await runCli(args, env, { ...c, fetch: fake })).toBe(1); expect(c.out()).not.toContain("successful");
+  test("request timeout returns redacted JSON and aborts a fetch that ignores abort", async () => {
+    const c=ctx(); let signal:AbortSignal | undefined;
+    const fake: CliDependencies["fetch"] = async (_url,init)=>{signal=init?.signal ?? undefined; return await new Promise<Response>(()=>{});};
+    expect(await runCli(args,env,{...c,fetch:fake,requestTimeoutMs:10})).not.toBe(0);
+    expect(signal?.aborted).toBe(true); expect(c.out()).toBe(""); expect(JSON.parse(c.output()).ok).toBe(false);
+    expect(c.output()).not.toContain(env.ENVINHANDS_TOKEN);
   });
 });
 
@@ -629,7 +718,7 @@ test("status and machines use Team defaults through the unified CLI", async () =
   const auth: string[] = [];
   const server = Bun.serve({hostname:"127.0.0.1", port:0, fetch(req) {
     auth.push(req.headers.get("authorization") ?? "");
-    return Response.json({machines:[{id:"node-a",status:"ready",host:"127.0.0.1",sshPort:22,checkedAt:null}]});
+    return Response.json({machines:[{id:"node-a",name:"Node A",os:"linux",sshUser:"alice",relayNodeId:null,status:"ready",host:"127.0.0.1",sshPort:22,checkedAt:null}]});
   }});
   let stdout = "", stderr = "", requests = 0;
   const deps: Partial<CliDependencies> = {
@@ -644,7 +733,7 @@ test("status and machines use Team defaults through the unified CLI", async () =
     expect(auth).toEqual(["Bearer private-status-token"]); expect(stderr).toBe("");
     stdout="";
     expect(await runCli(["machines","--format","table"], {HOME:home}, deps)).toBe(0);
-    expect(stdout).toContain("ID\tCATALOG\tSSH ENDPOINT"); expect(stdout).toContain("node-a\tready\t127.0.0.1:22");
+    expect(stdout).toContain("ID\tSTATUS\tOS\tUSER"); expect(stdout).toContain("node-a\tready\tlinux\talice");
     expect(requests).toBe(2); expect(stdout + stderr).not.toContain("private-status-token");
     stdout=""; stderr="";
     expect(await runCli(["machines","--bad"], {HOME:home}, deps)).toBe(2);
@@ -660,4 +749,96 @@ test("status uses injected request timeout and does not read the real home", asy
   });
   expect(code).toBe(4); expect(JSON.parse(stderr).error.code).toBe("TIMEOUT"); expect(observed?.aborted).toBe(true);
   expect(stdout).toBe(""); expect(stderr).not.toContain("hidden-token");
+});
+
+
+test("register uses Team defaults and a declared local actor", async () => {
+  const home=mkdtempSync(join(tmpdir(),"env-cli-register-team-"));
+  const requests: {auth:string; actor:string; body:string}[]=[];
+  const server=Bun.serve({hostname:"127.0.0.1",port:0,async fetch(req){
+    requests.push({auth:req.headers.get("authorization")??"",actor:req.headers.get("x-envinhands-registration")??"",body:await req.text()});
+    return Response.json({machine:{status:"pending"}},{status:202});
+  }});
+  const c=context(); const args=["register","--id","target","--name","Target","--host","localhost","--os","linux","--ssh-user","alice"];
+  try {
+    await writeTeamPrimeConfig({url:`http://127.0.0.1:${server.port}`,token:"private-team-register",machineId:"local-client"},{home});
+    expect(await runCli(args,{HOME:home},c)).toBe(1);
+    expect(requests.length).toBeGreaterThanOrEqual(1);
+    expect(requests.every(r=>r.auth==="Bearer private-team-register")).toBe(true);
+    const actor=JSON.parse(Buffer.from(requests[0]!.actor,"base64url").toString());
+    expect(actor.machineId).toBe("local-client"); expect(actor.agentId).toMatch(/^cli-[a-f0-9]{64}$/);
+    expect(actor.sessionId).toMatch(/^[a-f0-9-]{36}$/); expect(actor.signature).toBe("EnvInHands CLI registration");
+    expect(JSON.parse(requests[0]!.body).id).toBe("target"); expect(c.output()).not.toContain("private-team-register");
+  } finally {server.stop(true);rmSync(home,{recursive:true,force:true});}
+});
+
+test("register reports actor and partial Team configuration errors without fetching", async () => {
+  const args=["register","--id","target","--name","Target","--host","localhost","--os","linux","--ssh-user","alice"];
+  let requests=0; const c=context(); const deps={...c,fetch:async()=>{requests++;throw new Error("private-token");}};
+  expect(await runCli(args,{ENVINHANDS_URL:"https://example.org",ENVINHANDS_TOKEN:"private-token"},deps)).toBe(1);
+  expect(c.output()).toContain("E_ACTOR"); expect(requests).toBe(0);
+  expect(await runCli(args,{ENVINHANDS_URL:"https://example.org",ENVINHANDS_MACHINE_ID:"local"},deps)).toBe(1);
+  expect(c.output()).toContain("E_TEAM_CONFIG_PARTIAL"); expect(requests).toBe(0); expect(c.output()).not.toContain("private-token");
+  expect(await runCli(args,{ENVINHANDS_URL:"https://example.org",ENVINHANDS_TOKEN:"private-token",ENVINHANDS_MACHINE_ID:"../bad"},deps)).toBe(1);
+  expect(c.output().trim().split("\n").map(line=>JSON.parse(line).error.code)).toEqual(["E_ACTOR","E_TEAM_CONFIG_PARTIAL","E_ACTOR"]); expect(requests).toBe(0);
+});
+
+
+test("register on Windows selects a relay catalog route for the real access verifier", async () => {
+  const token="private-win-token", secret="private-win-relay";
+  const args=["register","--id","win-node","--name","Windows","--host","unreachable.example","--os","windows","--ssh-user","alice"];
+  const env={ENVINHANDS_URL:"https://control.example",ENVINHANDS_TOKEN:token,ENVINHANDS_MACHINE_ID:"client",
+    ENVINHANDS_SSH_IDENTITY:"/isolated/key",ENVINHANDS_SSH_KNOWN_HOSTS:"/isolated/hosts",
+    ENVINHANDS_RELAY_URL:"wss://relay.example",ENVINHANDS_RELAY_SECRET:secret,ENVINHANDS_PROXY_BINARY:"/isolated/envinhands.exe"};
+  let stdout="",stderr=""; const commands:string[][]=[];
+  const result=await runCli(args,env,{
+    platform:"win32", stdout:{write(text){stdout+=text;}},stderr:{write(text){stderr+=text;}},
+    fetch:async (input,init)=>{
+      const u=new URL(String(input));
+      if(u.pathname==="/v1/machines")return Response.json({machine:{}},{status:202});
+      if(u.pathname.endsWith("/verify"))return Response.json({machine:{status:"ready"}});
+      if(u.pathname==="/v1/transport-catalog") return Response.json({machineId:"win-node",routes:[{
+        machineId:"win-node",routeId:"relay-route",kind:"relay",controller:"test",relayNodeId:"win-node",
+        priority:1,observedAt:Date.now()-1,ttlMs:60000,status:"observed"}]});
+      return new Response(null,{status:404});
+    },
+    verifyClientAccess:(options,dependencies)=>verifyClientAccess(options,{
+      ...dependencies, fingerprint:async()=>"SHA256:"+"A".repeat(43),
+      runner:async (command,argv)=>{expect(command).toBe("ssh");commands.push([...argv]);return {exitCode:0};},
+    }),
+  });
+  expect(result).toBe(0);expect(JSON.parse(stdout).data.status).toBe("ready");expect(stderr).toBe("");
+  expect(commands).toHaveLength(2);expect(commands[0]!.join(" ")).toContain("ProxyCommand=");
+  expect(commands[0]!.join(" ")).toContain("win-node");
+  expect(commands[1]).toContain("powershell.exe");expect(commands[1]).toContain("-EncodedCommand");
+  expect(JSON.stringify(commands)+stdout+stderr).not.toContain(token);expect(JSON.stringify(commands)+stdout+stderr).not.toContain(secret);
+});
+
+
+test("register accepts Windows SSH users with spaces or leading digits, not for Unix", async () => {
+  const env={ENVINHANDS_URL:"https://control.example",ENVINHANDS_TOKEN:"private-token",ENVINHANDS_MACHINE_ID:"client",
+    ENVINHANDS_SSH_IDENTITY:"/isolated/key",ENVINHANDS_SSH_KNOWN_HOSTS:"/isolated/hosts"};
+  const argv=(os:string,user:string)=>["register","--id","machine","--name","Machine","--host","host.example","--os",os,"--ssh-user",user];
+  let requests=0, output="", errors=""; const commands:string[][]=[];
+  const deps:Partial<CliDependencies>={
+    stdout:{write(text){output+=text;}},stderr:{write(text){errors+=text;}},
+    fetch:async (input,init)=>{requests++;const path=new URL(String(input)).pathname;
+      if(path==="/v1/machines")return Response.json({machine:{}},{status:202});
+      if(path.endsWith("/verify"))return Response.json({machine:{status:"ready"}});
+      return new Response(null,{status:404});},
+    verifyClientAccess:(options,dependencies)=>verifyClientAccess(options,{...dependencies,
+      fingerprint:async()=>"SHA256:"+"A".repeat(43),runner:async (_command,args)=>{commands.push([...args]);return {exitCode:0};}}),
+  };
+  for(const user of ["123agent","Team Member"]) {
+    output="";errors="";commands.length=0;
+    expect(await runCli(argv("windows",user),env,deps)).toBe(0);
+    expect(JSON.parse(output).data.status).toBe("ready");expect(errors).toBe("");
+    expect(commands).toHaveLength(2);expect(commands[0]).toContain(user);expect(commands[1]).toContain("powershell.exe");
+  }
+  for(const [os,user] of [["linux","123agent"],["macos","Team Member"],["windows","bad;command"],["windows","bad "]]) {
+    const before=requests; output="";errors="";
+    expect(await runCli(argv(os!,user!),env,deps)).toBe(1); expect(requests).toBe(before);
+    expect(JSON.parse(errors)).toEqual({ok:false,error:{code:"E_USAGE"}});expect(output).toBe("");
+  }
+  expect(output+errors+JSON.stringify(commands)).not.toContain("private-token");
 });

@@ -4,25 +4,25 @@
 
 ## 2026-11-06 NAS pilot：实际状态与恢复
 
-- NAS 为 Debian 12 x86_64，现有 FRP 只暴露其 SSH 入口；Env 控制与 relay 均监听 NAS loopback，客户端通过 SSH 加密转发访问。NAS 用户级服务 `envinhands-team-control`、`envinhands-team-relay` 和 `envinhands-team-readiness` 在运行；服务/relay 版本基于 `654b36a`，control 使用修复重复 exec 的实验二进制，readiness 为独立构建。后续代码尚未全部部署，不能仅以 Git HEAD 断言服务版本。
+- NAS 为 Debian 12 x86_64，现有 FRP 只暴露其 SSH 入口；Env 控制与 relay 均监听 NAS loopback，客户端通过 SSH 加密转发访问。NAS 用户级服务 `envinhands-team-control`、`envinhands-team-relay` 和 `envinhands-team-readiness` 在运行；control 为 `9d52eb0` 构建，relay 仍是先前 pilot 版本，readiness 为独立构建。后续代码尚未全部部署，不能仅以 Git HEAD 断言运行版本。
 - 为 NAS 账户添加了仅该用户的 `AllowTcpForwarding local` SSH 配置（`/etc/ssh/sshd_config.d/00-envinhands-team-forwarding.conf`），变更前后 `sshd -t`、匹配用户及 root 策略检查通过并 reload；没有新增公网端口。回退先停用使用该转发的 Env 进程，再删除此 owned 配置并 `sshd -t` 后 reload；不要改其他 SSH 配置。
 - NAS 账密与本次传输配置不在仓库。NAS 控制配置在 `~/.local/share/envinhands/` 的 team pilot 目录，以 owner-only 权限保存；本机客户端入口在 `~/.config/envinhands/` 的对应 team 私有目录。NAS 专用 SSH key 不应转发或提交。
 - `local-desktop`、`mac-laptop` 和 `rtx-home` 已通过 NAS relay 的真实 SSH + 管理员能力检查；本机与 Mac 的各自客户端密钥还分别做过双向 SSH + sudo。服务端 ready 是该身份检查时点结果。RTX 有效 Windows 管理员 token 经过真实 SSH 测试。
-- 本机用户 systemd units `envinhands-nas-tunnel` 和 `envinhands-local-node`；Mac 用户 LaunchAgents `io.envinhands.pilot.tunnel/node`。它们使用私有配置、只处理当前用户会话；Linux linger 未启用。RTX `\EnvInHands-RTX-NAS-04bfb228b4d7` 是该用户登录触发的 Limited 任务，断 tunnel 后自动恢复已实测，未实测注销/登录。节点不保证机器休眠/断电持续在线。
-- 本机及 Mac 的两个真实 Prime 0.9.8 会话经 NAS 用**现有协作工具扩展**双向 send/pull/ack 并共同读写 notes，非原生 agent_message。独立的两个真实 Prime daemon + 临时服务已验证 native mesh roster/stored/接收记录/ACK，尚未在真实 NAS/三机加载验证、未证明断电恢复。
-- 用户要求 team/prime 与主线共存、自动复用现有 0.9.8 配置、自动加载 skills、Agent 名以前缀标示节点。Prime 原生跨机代码在开发并已通过隔离双 daemon 的 stored、持久、ACK、同 operation ID 重试及故障边界测试；尚未在真实 NAS/三台设备实测或发布。新服务端必须先升级，随后升级客户端，不能将本地代码等同于已部署服务。
-- EasyTier v2.6.4 在本机与 Mac 的临时独立网络实测双向 SSH、P2P/TCP 及断链重连，默认路由不变；本次是同 LAN，不等于跨 NAT/公网。运行进程及临时配置按用户 pilot 管理，停止前须核对所属；Cloudflare Quick Tunnel 实验返回 530，FRP 官方本地数据平面可测，UU 不应误称跨机接通。
+- 本机用户 systemd units `envinhands-nas-tunnel` 和 `envinhands-local-node`；Mac 用户 LaunchAgents `io.envinhands.pilot.tunnel/node`。两端 node 已逐台升级到 `9d52eb0dedcd032364e75035830921c85e980b0a` 源码，认证 HTTP 与双向 SSH 通过，私有 debug 事件日志已生成；旧版本保留供回退。它们使用私有配置、只处理当前用户会话；Linux linger 未启用。RTX `\EnvInHands-RTX-NAS-04bfb228b4d7` 是该用户登录触发的 Limited 任务，断 tunnel 后自动恢复已实测，未实测注销/登录。节点不保证机器休眠/断电持续在线。
+- 本机及 Mac 的两个真实 Prime 0.9.8 会话经 NAS 用协作工具扩展双向 send/pull/ack 并共同读写 notes。另在隔离 Linux/Mac daemon 的真实模型和真实 Python skill 中，经真实 NAS 双向 `agent_observe.list_agents` / `agent_message.send`，接收端 transcript 持久化且 broker 不再 pending（ACK）。Mac 是再次提示后才回复，并未证明自动回复；未证明断电恢复。测试发现旧提交会丢掉 Python 传入的 operation_id，不要安全重试；源码已修复，临时双 daemon + faux provider 测试证明同 ID 去重，但修复版尚未部署和真实异地复测。
+- 用户要求 team/prime 与主线共存、自动复用现有 0.9.8 配置、自动加载 skills、Agent 名以前缀标示节点。Prime team 配置文件自动读取和 Env `team-config` 已有源码及 Linux 隔离跨仓库验证；安装和 Windows ACL 仍需真实平台验收。新服务端必须先升级，随后升级客户端，不能将本地代码等同于已部署服务。
+- EasyTier v2.6.4 在本机与 Mac 的临时独立网络实测双向 SSH、P2P/TCP 及断链重连，默认路由不变；本次是同 LAN，不等于跨 NAT/公网。NAS 两条临时 Cloudflare Quick Tunnel 已通过 HTTPS 控制 API 和 WSS relay→Mac 的真实 SSH，试验入口随后关闭；临时域名不是稳定服务，TLS 在 Cloudflare 终止。FRP 官方本地数据平面可测，UU 不应误称跨机接通。
 - 账号密码曾出现在对话中，建议用户自行轮换；切勿将密码、token、私钥或团队私有服务配置提交至 Git 或日志。共享 token 在团队信任域内有效，不提供个体强身份。
 
 ## 2026-11-06 整合开发说明
 
-本轮本地整合验证：Bun 1.4.4，启用官方本地 FRP 测试和用户 FRP 配置离线解析时 **333 通过、1 跳过（真实 Cloudflare Quick Tunnel；本次独立 live 测试失败）**，类型检查通过。FRP 测试没有启动或覆盖用户已有 proxy。这里记录本地代码测试，不等于 NAS 运行版本已经升级。
+最新本地源码检查：Bun 1.4.4，启用官方本地 FRP 测试和用户 FRP 配置离线解析时 **372 通过、1 跳过（可选 Cloudflare live 条件测试）**，类型检查通过。FRP 测试没有启动或覆盖用户已有 proxy。这里记录本地代码测试，不等于 NAS 运行版本已经升级。
 
-Prime fork `npm run check` 通过；对变更测试使用三个乱序种子检查均通过，每轮 296 通过、2 跳过。native mesh 已通过临时服务双 daemon 的注册、发现、持久投递、ACK 和同 operation ID 重试，**尚未在真实 NAS/三台设备运行该新版本**。
+Prime fork `npm run check` 通过；Python skill 与隔离双 daemon 回归已验证预生成 operation ID、重复调用去重和 ACK。真实 Linux/Mac + NAS 在旧版已验证双向发送及接收 ACK，发现旧版 Python operation ID 被丢弃；修复版尚待部署后真实异地复测。
 
 新增 Agent 画像 notes、native mesh 目录分页、服务器/节点 debug 事件日志、断线检测、自动复核与传输 sidecar；多个后端仍需真正接线和跨网络验证。日志只含事件元数据，不含 SSH 终端正文；共享 token 是团队信任，不构成个体强身份。原访问证据旧 API 的失败重验与并发 stale-ready 问题仍在，新增 generation API 尚未被现有消费者完整使用，不可把旧 evidence 当成当前 Agent 的保证。
 
-## 最新可接手版本
+## 旧的接手版本（历史；不覆盖上面的 NAS 现状）
 
 - Env功能源码 `ba9a9d289eb1adb18799e18b2d597c7c1aa0d6c9` 已push并独立核远端SHA：Windows221pass/type0，精确186文件Linux220pass/1skip/0fail/type0。唯一skip为可选外部Prime直接导入；单独真实Prime证据见下。
 - Prime fork `88b7d8cbc137fd307f29aa51edac3e472ea174ff` 已正常hooks提交push、root独立核SHA；必要source-loader修复和最小安全依赖/ZIP修复分提交保留。剩余依赖告警明确，不称全安全。
@@ -40,7 +40,7 @@ Prime fork `npm run check` 通过；对变更测试使用三个乱序种子检�
 - Prime Agent fork：<https://github.com/nkanf-dev/prime-agent>，从 `peterkc/prime-agent` fork。目标保持 TypeScript 0.9.8 系列。
 - Prime Agent fork 已浅克隆至 `~/projs/prime-agent`；所有我方改动已直接推送 [`main`](https://github.com/nkanf-dev/prime-agent)（`e398494`）：opt-in 生命周期 heartbeat、消息收发与资源工具。真实 0.9.8 loader 已在隔离环境加载心跳和四个消息工具；资源扩展有本地测试，尚未验证跨机或自动注入。
 
-## 当前控制主机与最终测试环境（用户已明确）
+## 历史控制主机与当时的测试环境（已被上方 NAS pilot 补充）
 
 Hyper-V VM `EnvInHands-Debian12` 是本项目**当前控制主机**，不仅是外围模拟环境；用户已明确最终集成测试可以使用它。后续控制面、持久消息服务、relay 和多个 Prime 客户端协作验收以此 VM 为控制主机组织。未来真实 Debian NAS 的平台迁移与六设备/跨互联网覆盖另列验收，不以尚未覆盖真实 NAS 为由否定这台控制主机上的有效集成证据。
 

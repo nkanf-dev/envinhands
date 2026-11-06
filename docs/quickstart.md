@@ -90,7 +90,7 @@ python3 -c 'import hashlib; h=hashlib.sha256(b"my-node").hexdigest(); print("env
 
 `POST /v1/machines` 创建 `pending` 记录，需填写 `id`、`name`、`host`、`os`、`sshUser`，可选 `sshPort`。这**不安装密钥、不配置 sudo，也不代表注册完成**。`POST /v1/machines/<id>/verify` 使用服务端本机 SSH 身份实际验证登录；Linux/macOS 执行 `sudo -n true`，Windows 检查当前会话的有效管理员令牌。默认 `GET /v1/machines` 只列出最近通过检查的 ready 记录；`?includePending=true` 可查看待验证记录。检查是时间点观察，默认五分钟过期；其他 Agent 使用不同密钥时还须分别验证。Windows 检查目前只有 mock 测试，尚未实机验证。
 
-可调用 CLI 创建记录并要求立即检查，只有检查返回 ready 才退出 0：
+可调用 CLI 创建记录并要求立即检查。服务端通过只能证明**服务端使用的 SSH 身份**可登录及管理员可用；它不能代表其他 Agent 已就绪。因此当前 `register` 保留记录并返回非零，提示在各 Agent 执行 `verify-access`。自动分发公钥与逐 Agent 全部就绪流程尚未接通，不应将这一阶段称为完整注册成功：
 
 ```bash
 export ENVINHANDS_URL="https://<服务地址>"
@@ -101,7 +101,15 @@ export ENVINHANDS_TOKEN="<团队控制面密钥>"
 
 其中 `--host` 是服务端 SSH 客户端用来验证目标主机密钥的名称；须预先在**服务端**安全配置目标的 known_hosts 和认证密钥。经反向 relay 验证时，服务端还需要设置 `ENVINHANDS_PROXY_BINARY` 为已编译 `envinhands` 的绝对路径，以及 `ENVINHANDS_RELAY_URL` 和 `ENVINHANDS_RELAY_SECRET`。当前 CLI 无法修改已有记录；遇到冲突时需要检查已有状态。服务端为 Windows 时该 relay 检查尚不支持。
 
-注册自动配置和安全撤销、管理员多平台验证、可靠多出口自动切换以及 Prime Agent 消息的自动注入均未完成。
+注册自动配置和安全撤销、逐 Agent 管理员就绪及多平台完整验收仍未完成。
+
+### Team Prime 配置与自动选路（新源码）
+
+在安全注入 `ENVINHANDS_URL`、`ENVINHANDS_TOKEN` 和注册节点名 `ENVINHANDS_MACHINE_ID` 后，运行 `envinhands team-config`。这只写入私有的 `~/.prime-team/envinhands-mesh.json`，不创建 Agent profile；团队版 Prime 首次启动仍可从原有 0.9.8 配置单向复制模型、provider 和认证，之后两者独立。已有不同配置不会自动覆盖；确需替换时才使用 `--replace`。机密不要放在命令参数或仓库。Windows ACL 支持目前只经过模拟，尚需实机验证。
+
+节点除 relay 设置外同时提供 `ENVINHANDS_URL` 与 `ENVINHANDS_TOKEN` 时，会自动把本机接口地址作为**待验证观察**发布到控制面。真正 relay 注册后才发布 relay 候选；断开后停止续期，旧观察至 TTL 到期前可能仍可见。`ENVINHANDS_EASYTIER_INTERFACES` 可指定逗号分隔的 EasyTier 接口名。客户端实际严格 SSH 探测才决定能否使用候选；发布不等于已验证可访问。
+
+交互终端可设置 `ENVINHANDS_SSH_IDENTITY`、`ENVINHANDS_SSH_KNOWN_HOSTS`，并运行 `envinhands connect MACHINE_ID USER`。它优先探测非 relay 候选，失败后尝试已配置的 relay，然后只启动一次 SSH 会话。relay 还需要 `ENVINHANDS_PROXY_BINARY`、`ENVINHANDS_RELAY_URL` 和 `ENVINHANDS_RELAY_SECRET`；Windows 客户端 relay 暂不支持，但不会阻止尝试直连。候选地址来自共享目录，密钥和 host-key 信任始终来自本机。此功能需要新版服务及节点，当前试点服务升级状态请先看 `HANDOFF.md`；尚未自动安装 FRP/EasyTier/Cloudflare/UU，也不能保证跨 NAT。
 
 ## Portable collaboration without a Prime fork
 

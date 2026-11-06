@@ -6,6 +6,10 @@ import { runProvisionCli } from "./provision-cli.ts";
 import { signedCliFetch } from "./cli-registration.ts";
 import { runServiceCli } from "./service-cli.ts";
 import { runPrimeProfileCli } from "./prime-profile-cli.ts";
+import { runTeamConfigCli } from "./team-config-cli.ts";
+import { runRouteConnectCli } from "./route-connect-cli.ts";
+import { startRouteAdvertiser } from "./route-advertiser.ts";
+import { createHash, randomUUID } from "node:crypto";
 import { runRemoteAccessCli } from "./remote-access-cli.ts";
 import { runDeviceCli } from "./device-cli.ts";
 import { runCollaborationCli } from "./collaboration-cli.ts";
@@ -23,7 +27,7 @@ import type { DebugLogger } from "./debug-log.ts";
 import { createProcessDebugLogger } from "./process-debug-log.ts";
 export { debugLogWriterName, reapDebugLogs, createProcessDebugLogger } from "./process-debug-log.ts";
 
-const help = `Usage: bun src/cli.ts <publish PROFILE_JSON|files hosts|files resources [HOST]|files list [HOST]|files read [HOST]|files write [HOST]|files inspect [HOST]|provision|service CONFIG_JSON|prime-profile ENV_ROOT [PRIME_ROOT]|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
+const help = `Usage: bun src/cli.ts <connect MACHINE_ID USER|team-config [--replace]|publish PROFILE_JSON|files hosts|files resources [HOST]|files list [HOST]|files read [HOST]|files write [HOST]|files inspect [HOST]|provision|service CONFIG_JSON|prime-profile ENV_ROOT [PRIME_ROOT]|access PROFILE_JSON|device register|device inventory|collaborate COMMAND|verify-access|exec|change register|change record|change list [AFTER] [LIMIT]|change enqueue|change flush|server|relay|node NODE_ID|proxy NODE_ID|tmux NODE_ID SESSION_KEY [USER]|register FLAGS>
 
 publish: outbound strict SSH reverse publication of a local loopback service to
          approved SSH host loopback only; private JSON profile, no public bind.
@@ -37,11 +41,16 @@ service: starts persistent control service from private absolute JSON config;
          signed mutations required, config/DB preserved on SIGINT/SIGTERM.
 prime-profile: emits normal opt-in Prime settings with collaboration, audit, execution,
                read-only files and explicit project skills; no credential or config writes.
+team-config: persist ENVINHANDS_URL/TOKEN and optional ENVINHANDS_MACHINE_ID for
+             prime-agent-team native mesh; --replace explicitly changes existing config.
+connect: discover and probe candidate SSH routes, then open one interactive session;
+         requires ENVINHANDS_URL/TOKEN/SSH_IDENTITY/SSH_KNOWN_HOSTS and a TTY.
 access: encrypted SSH forwarding to configured loopback control service;
         one absolute JSON profile path, emits local URL, stop with SIGINT/SIGTERM.
 device: register reads JSON id/host and optional SSH fields; collects local OS/name.
         Default registers pending metadata only. inventory includes failed/stale devices.
-collaborate: heartbeat|agents|send|pull|ack|machines|notes|add-note.
+collaborate: heartbeat|agents|send|pull|ack|machines|notes|add-note|
+        profile-notes list|profile-notes add|profile-notes reply.
         JSON stdin except agents/machines; explicit actions, no automatic execution.
 verify-access: JSON stdin; verify this client SSH identity/path and real admin,
         not the service identity. Non-ready exits 1 with explicit evidence.
@@ -96,6 +105,7 @@ export interface CliDependencies {
   startServer: typeof startAgentBusServer;
   startRelay: typeof createRelayServer;
   startNode: typeof startNodeRuntime;
+  startRouteAdvertiser: typeof startRouteAdvertiser;
   startProxy: typeof startSshProxy;
   signals: SignalSource;
   stderr: { write(text: string): unknown };
@@ -111,7 +121,7 @@ export interface CliDependencies {
 }
 const defaults: CliDependencies = {
   startServer: startAgentBusServer, startRelay: createRelayServer,
-  startNode: startNodeRuntime, startProxy: startSshProxy,
+  startNode: startNodeRuntime, startRouteAdvertiser, startProxy: startSshProxy,
   signals: process, stderr: process.stderr, stdout: process.stdout,
   fetch: globalThis.fetch, requestTimeoutMs: 20_000,
   platform: process.platform, compiled: Bun.main.startsWith("/$bunfs/"), execPath: process.execPath,
@@ -261,8 +271,8 @@ async function register(args: string[], env: NodeJS.ProcessEnv, deps: CliDepende
   if (verified.status !== 200 || value?.machine?.status !== "ready") {
     deps.stderr.write("Registration not-ready: verification failed or is unsupported; the record may remain pending. No automatic key or sudo setup was performed.\n"); return 1;
   }
-  deps.stdout.write("Registration successful: machine is ready. Verification used the server's SSH identity only; verify each agent separately. No SSH key or sudo setup was performed.\n");
-  return 0;
+  deps.stderr.write("Registration incomplete: server SSH/admin verification passed, but each agent's SSH identity and administrator access remain unverified. The machine record was kept. Configure the agent key and host trust, then run verify-access from each agent; no key or sudo setup was performed automatically.\n");
+  return 1;
 }
 
 /** Run a command. Dependencies and environment are injectable for tests. */
@@ -274,6 +284,19 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
   if (command === "publish") return runRemotePublishCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
   if (command === "service") return runServiceCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals, { env, platform: deps.platform });
   if (command === "prime-profile") return runPrimeProfileCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)});
+  if (command === "team-config") return runTeamConfigCli(args.slice(1), env, {stdout:text=>deps.stdout.write(text),stderr:text=>deps.stderr.write(text)});
+  if (command === "connect") {
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    deps.signals.on("SIGINT", cancel); deps.signals.on("SIGTERM", cancel);
+    try {
+      return await runRouteConnectCli(args, {
+        env, isTTY: deps.stdinIsTTY && deps.stdoutIsTTY, signal: controller.signal,
+        stderr: text => deps.stderr.write(text + "\n"),
+        fetch: (url, init) => deps.fetch(url, init), platform: deps.platform,
+      });
+    } finally { deps.signals.removeListener("SIGINT", cancel); deps.signals.removeListener("SIGTERM", cancel); }
+  }
   if (command === "access") return runRemoteAccessCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
   if (command === "change" || command === "exec" || command === "verify-access" || command === "collaborate" || command === "device" || command === "provision" || command === "files") {
     const io = {
@@ -340,11 +363,40 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
         return 0;
       }
       const sshPort = port(env, "ENVINHANDS_SSH_PORT", "22");
-      setupLogger("node", [secret]);
-      const runtime = deps.startNode({ relayUrl: url, nodeId: id!, secret, sshPort, onEvent });
+      setupLogger("node", [secret, env.ENVINHANDS_TOKEN ?? ""]);
+      // Catalog observations are optional and never gate the relay node. Each
+      // observation is untrusted until an SSH client verifies it with its own key.
+      let advertiser: ReturnType<typeof startRouteAdvertiser> | undefined;
+      if (env.ENVINHANDS_URL && env.ENVINHANDS_TOKEN) {
+        try {
+          const controller = "node-" + createHash("sha256").update(id!).digest("hex");
+          const attribution = { ...env, ENVINHANDS_MACHINE_ID: id!, ENVINHANDS_AGENT_ID: controller,
+            ENVINHANDS_SESSION_ID: randomUUID(), ENVINHANDS_AUDIT_SIGNATURE: "EnvInHands node route observer" };
+          const signed = signedCliFetch(attribution, deps.fetch);
+          advertiser = deps.startRouteAdvertiser({ baseUrl: env.ENVINHANDS_URL, token: env.ENVINHANDS_TOKEN,
+            machineId: id!, relayNodeId: id!, controller, sshPort,
+            easytierInterfaces: (env.ENVINHANDS_EASYTIER_INTERFACES ?? "").split(",").map(x => x.trim()).filter(Boolean),
+            onEvent: (event, fields) => logger?.debug("route_" + event, {machineId:id!, durationMs:fields.delayMs})
+          }, {fetch: (target, init) => signed(target, init)});
+        } catch {
+          // Invalid or temporarily unavailable catalog setup must not stop SSH relay.
+          logger?.error("route_advertiser_error", {machineId:id!, errorCategory:"configuration"});
+          error("Automatic route publication could not start; check the control URL and node environment. Relay remains available.");
+        }
+      } else if (env.ENVINHANDS_URL || env.ENVINHANDS_TOKEN) {
+        error("Set both ENVINHANDS_URL and ENVINHANDS_TOKEN to enable automatic route publication. Relay remains available.");
+      }
+      const nodeEvent: typeof onEvent = (event, fields) => {
+        onEvent(event, fields);
+        if (event === "node_registered") advertiser?.setRelayConnected(true);
+        else if (event === "node_disconnected") advertiser?.setRelayConnected(false);
+      };
+      let runtime: ReturnType<typeof startNodeRuntime>;
+      try { runtime = deps.startNode({ relayUrl: url, nodeId: id!, secret, sshPort, onEvent:nodeEvent }); }
+      catch (err) { advertiser?.stop(); throw err; }
       // ready may reject when stopped before first registration. Retry is handled by the runtime.
       void runtime.ready.catch(() => {});
-      return await untilSignal(deps.signals, () => runtime.close(), runtime.finished);
+      return await untilSignal(deps.signals, () => { advertiser?.stop(); runtime.close(); }, runtime.finished);
     }
     if (command === "server") {
       const token = required(env, "ENVINHANDS_TOKEN");

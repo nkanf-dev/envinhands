@@ -13,6 +13,7 @@ import { createAccessEvidenceApi } from "./access-evidence-api.ts";
 import { createMutationAudit } from "./mutation-audit.ts";
 import { createResourceProfileApi } from "./resource-profile.ts";
 import { createNativeMeshApi } from "./integrations/native-mesh.ts";
+import { createTransportCatalogApi } from "./transport-catalog.ts";
 
 export interface AgentBusServerOptions {
   dbPath: string;
@@ -56,6 +57,7 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
     const sharedFiles = own(createSharedFilesApi({ roots: options.sharedRoots ?? {}, token: options.token }));
     const profiles = own(createResourceProfileApi({ dbPath: options.dbPath, token: options.token }));
     const nativeMesh = own(createNativeMeshApi({ dbPath: options.dbPath, token: options.token }));
+    const transportCatalog = own(createTransportCatalogApi({ dbPath: options.dbPath, token: options.token, allowInMemory: options.dbPath === ":memory:" }));
     const mutations = own(createMutationAudit({ dbPath: options.dbPath, token: options.token,
       machineId: options.machineId ?? "control-host", requireSignedMutations: options.requireSignedMutations }));
     server = Bun.serve({
@@ -65,6 +67,7 @@ export function startAgentBusServer(options: AgentBusServerOptions): { url: stri
         const path = new URL(request.url).pathname;
         if (/^\/v1\/resources\/[^/]+\/profile-notes(?:\/[^/]+)?$/.test(path)) return profiles.fetch(request);
         if (path === "/v1/native-mesh/agents") return nativeMesh.fetch(request);
+        if (path === "/v1/transport-catalog") return transportCatalog.fetch(request);
         if (path === "/v1/shared-files" || path === "/v1/shared-files/list" || path === "/v1/shared-resources") return sharedFiles.fetch(request);
         if (path === "/v1/access-evidence") return accessEvidence.fetch(request);
         if (path === "/v1/changes" || path === "/v1/agent-registrations") return changes.fetch(request);

@@ -141,11 +141,12 @@ describe("register CLI", () => {
   const env = { ENVINHANDS_URL: "https://example.org", ENVINHANDS_TOKEN: "secret-register-token", ENVINHANDS_AGENT_ID: "cli-test", ENVINHANDS_MACHINE_ID: "client", ENVINHANDS_SESSION_ID: "cli-session", ENVINHANDS_AUDIT_SIGNATURE: "CLI test" };
   function ctx() { let stdout = ""; const c = context(); return { ...c, stdout: { write(s: string) { stdout += s; } }, out: () => stdout }; }
   function json(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }); }
-  test("creates pending then verifies and reports ready only", async () => {
+  test("does not claim team readiness from server-only verification", async () => {
     const c = ctx(); const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fake: CliDependencies["fetch"] = async (url, init) => { calls.push({ url: String(url), init }); return calls.length === 1 ? json({ machine: { status: "pending" } }, 202) : json({ machine: { status: "ready" }, verificationScope: "server" }); };
-    expect(await runCli(args, env, { ...c, fetch: fake })).toBe(0);
-    expect(c.out()).toContain("successful");
+    expect(await runCli(args, env, { ...c, fetch: fake })).toBe(1);
+    expect(c.out()).not.toContain("successful");
+    expect(c.output()).toContain("each agent's SSH identity");
     expect(calls.map(x => x.url)).toEqual(["https://example.org/v1/machines", "https://example.org/v1/machines/node-1/verify"]);
     expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({ id: "node-1", name: "Node One", host: "host.example", os: "linux", sshUser: "admin", sshPort: 2222 });
     expect(calls[0]!.init!.redirect).toBe("error");
@@ -155,7 +156,7 @@ describe("register CLI", () => {
   test("passes a validated relay node to the registration API", async () => {
     const c = ctx(); const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fake: CliDependencies["fetch"] = async (url, init) => { calls.push({ url: String(url), init }); return calls.length === 1 ? json({ machine: { status: "pending" } }, 202) : json({ machine: { status: "ready" } }); };
-    expect(await runCli([...args, "--relay-node", "node-1"], env, { ...c, fetch: fake })).toBe(0);
+    expect(await runCli([...args, "--relay-node", "node-1"], env, { ...c, fetch: fake })).toBe(1);
     expect(JSON.parse(String(calls[0]!.init!.body)).relayNodeId).toBe("node-1");
     expect(await runCli([...args, "--relay-node", "../unsafe"], env, { ...c, fetch: fake })).toBe(1);
     expect(calls.length).toBe(2);
@@ -380,4 +381,55 @@ test("real short-lived relay processes leave logs that concurrent startup cleanu
     expect(await Promise.all([a.exited, b.exited])).toEqual([0, 0]);
     expect(readdirSync(base)).toHaveLength(0);
   } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+
+test("node automatically advertises observed routes without blocking relay and cleans up", async () => {
+  const c = context(); let finish!: () => void; const finished = new Promise<void>(r => { finish = r; });
+  let nodeOptions: Parameters<CliDependencies["startNode"]>[0] | undefined;
+  let observerOptions: Parameters<CliDependencies["startRouteAdvertiser"]>[0] | undefined;
+  let observerDeps: Parameters<CliDependencies["startRouteAdvertiser"]>[1] | undefined;
+  let stopped = 0, closes = 0; const connected: boolean[] = [];
+  const startNode: CliDependencies["startNode"] = options => { nodeOptions=options; return {ready:Promise.resolve(),finished,close(){closes++;finish();}}; };
+  const startRouteAdvertiser: CliDependencies["startRouteAdvertiser"] = (options, dependencies) => {
+    observerOptions=options; observerDeps=dependencies;
+    return {setRelayConnected(value){connected.push(value);}, refresh(){}, stop(){stopped++;}};
+  };
+  let headers: Headers | undefined;
+  const testFetch: CliDependencies["fetch"] = async (_url, init) => {headers=new Headers(init?.headers);return new Response("ok");};
+  const task = runCli(["node","node-a"], {ENVINHANDS_RELAY_URL:"ws://localhost:8788",ENVINHANDS_RELAY_SECRET:"relay-test",ENVINHANDS_URL:"http://127.0.0.1:28787",ENVINHANDS_TOKEN:"api-test",ENVINHANDS_EASYTIER_INTERFACES:"et0, et1"}, {...c,startNode,startRouteAdvertiser,fetch:testFetch});
+  expect(observerOptions?.machineId).toBe("node-a"); expect(observerOptions?.relayNodeId).toBe("node-a");
+  expect(observerOptions?.easytierInterfaces).toEqual(["et0","et1"]); expect(observerOptions?.controller).toMatch(/^node-[a-f0-9]{64}$/);
+  await observerDeps!.fetch!(new URL("http://127.0.0.1:28787/v1/transport-catalog"), {method:"POST"});
+  expect(headers?.get("x-envinhands-registration")).toBeTruthy(); expect(headers?.get("x-envinhands-operation-id")).toBeTruthy();
+  nodeOptions!.onEvent!("node_registered",{}); nodeOptions!.onEvent!("node_disconnected",{});
+  expect(connected).toEqual([true,false]); c.signals.emit("SIGTERM");
+  expect(await task).toBe(0); expect(stopped).toBe(1); expect(closes).toBe(1); expect(c.output()).not.toContain("api-test");
+});
+
+test("automatic route setup failure never blocks the relay node", async () => {
+  const c=context(); let finish!:()=>void; const finished=new Promise<void>(r=>{finish=r;}); let started=false;
+  const task=runCli(["node","n"],{ENVINHANDS_RELAY_URL:"wss://localhost",ENVINHANDS_RELAY_SECRET:"r",ENVINHANDS_URL:"http://127.0.0.1",ENVINHANDS_TOKEN:"secret-test"},{...c,
+    startRouteAdvertiser:()=>{throw new Error("secret-test");}, startNode:()=>{started=true;return {ready:Promise.resolve(),finished,close(){finish();}};}});
+  expect(started).toBe(true); expect(c.output()).toContain("Relay remains available"); expect(c.output()).not.toContain("secret-test");
+  c.signals.emit("SIGINT"); expect(await task).toBe(0);
+});
+
+
+test("real node publishes relay and direct observations to the signed control server", async () => {
+  const c=context(), dir=mkdtempSync(join(tmpdir(),"env-observer-"));
+  const control=startAgentBusServer({token:"ctrl-test",dbPath:join(dir,"db.sqlite"),hostname:"127.0.0.1",port:0});
+  const relay=createRelayServer({secret:"relay-test",hostname:"127.0.0.1",port:0});
+  const task=runCli(["node","route-node"],{ENVINHANDS_RELAY_URL:`ws://127.0.0.1:${relay.port}`,ENVINHANDS_RELAY_SECRET:"relay-test",ENVINHANDS_URL:control.url,ENVINHANDS_TOKEN:"ctrl-test"},c);
+  try {
+    let routes: any[]=[];
+    for(let n=0;n<80;n++) {
+      const res=await fetch(`${control.url}/v1/transport-catalog?machineId=route-node`,{headers:{authorization:"Bearer ctrl-test"}});
+      routes=(await res.json() as {routes:any[]}).routes;
+      if(routes.some(x=>x.kind==="relay" && x.status==="observed")) break;
+      await Bun.sleep(25);
+    }
+    expect(routes.some(x=>x.kind==="relay" && x.relayNodeId==="route-node" && x.status==="observed")).toBe(true);
+    expect(routes.every(x=>x.controller.startsWith("node-"))).toBe(true);
+  } finally {c.signals.emit("SIGTERM"); await task; await control.stop(); relay.stop(); rmSync(dir,{recursive:true,force:true});}
 });

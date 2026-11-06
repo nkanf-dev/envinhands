@@ -283,3 +283,82 @@ test("server lifecycle metadata ignores callback failures", async () => {
     expect(events).toEqual(["server_started", "server_stopped"]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+
+test("transport catalog is authenticated, declared, audited and persistent in the production server", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "server-transport-catalog-"));
+  const dbPath = join(dir, "bus.sqlite"), token = randomBytes(32).toString("hex");
+  const registration = {registrationId: "catalog-registration", agentId: "alice", sessionId: "session-a", machineId: "client-a", signature: "test declaration"};
+  const bearer = {authorization: `Bearer ${token}`, "content-type": "application/json"};
+  const declared = {...bearer, "x-envinhands-registration": Buffer.from(JSON.stringify(registration)).toString("base64url"), "x-envinhands-operation-id": "catalog-update"};
+  const route = {machineId: "node-a", routeId: "direct-a", kind: "direct", controller: "controller-a", host: "127.0.0.2", port: 22, priority: 1, observedAt: Date.now(), ttlMs: 86400000};
+  const path = "/v1/transport-catalog", query = `${path}?machineId=node-a`;
+  let server: ReturnType<typeof startAgentBusServer> | undefined;
+  const start = () => startAgentBusServer({dbPath, token, hostname: "127.0.0.1", port: 0, requireSignedMutations: true});
+  const call = (url: string, method = "GET", body?: unknown, headers: Record<string, string> = bearer) => fetch(server!.url + url, {
+    method, headers, ...(body === undefined ? {} : {body: JSON.stringify(body)}),
+  });
+  try {
+    server = start();
+    for (const headers of [{}, {authorization: "Bearer wrong"}] as Record<string, string>[]) {
+      expect((await call(query, "GET", undefined, headers)).status).toBe(401);
+      expect((await call(path, "POST", route, headers)).status).toBe(401);
+    }
+    expect((await call(path, "POST", route)).status).toBe(400);
+    expect(await (await call(query)).json()).toEqual({machineId: "node-a", routes: []});
+    expect((await call(path, "POST", route, declared)).status).toBe(200);
+    expect(await (await call(query)).json()).toEqual({machineId: "node-a", routes: [{...route, status: "observed"}]});
+    // Existing bus APIs still work alongside the mounted catalog and audit boundary.
+    const message = {requestId: "catalog-test", from: "alice", to: "bob", text: "legacy message"};
+    expect((await call("/v1/messages", "POST", message, declared)).status).toBe(201);
+    const bridge = new PrimeBridge({baseUrl: server.url, token, fetch});
+    expect(await bridge.pull("bob")).toEqual([message]);
+    expect((await call("/v1/agents")).status).toBe(200);
+    await server.stop();
+    server = start();
+    expect(await (await call(query)).json()).toEqual({machineId: "node-a", routes: [{...route, status: "observed"}]});
+    expect(await new PrimeBridge({baseUrl: server.url, token, fetch}).pull("bob")).toEqual([message]);
+    const store = createChangeStore(dbPath);
+    try {
+      const records = store.list(0, 100).records.filter(record => record.resourceId === path);
+      expect(records.map(record => record.outcome)).toEqual(["unknown", "success"]);
+      for (const record of records) expect(record).toMatchObject({operationId: "catalog-update", registration: {agentId: "alice"}});
+      expect(JSON.stringify(records)).not.toContain(route.host);
+      expect(JSON.stringify(records)).not.toContain(token);
+    } finally { store.close(); }
+  } finally { await server?.stop(); rmSync(dir, {recursive: true, force: true}); }
+});
+
+test("transport catalog startup failure closes earlier server database resources", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "server-catalog-init-failure-"));
+  const dbPath = join(dir, "bus.sqlite"), token = randomBytes(32).toString("hex");
+  try {
+    const db = new Database(dbPath);
+    db.exec("CREATE TABLE fixture (value INTEGER); CREATE INDEX transport_catalog ON fixture(value)");
+    db.close();
+    let unexpected: ReturnType<typeof startAgentBusServer> | undefined;
+    try { expect(() => { unexpected = startAgentBusServer({dbPath, token, hostname: "127.0.0.1", port: 0}); }).toThrow(); }
+    finally { await unexpected?.stop(); }
+    if (process.platform === "linux" && existsSync("/proc/self/fd")) {
+      const openPaths = readdirSync("/proc/self/fd").flatMap(fd => {
+        try { return [readlinkSync(`/proc/self/fd/${fd}`)]; } catch { return []; }
+      });
+      expect(openPaths.filter(path => path === dbPath || path.startsWith(`${dbPath}-`))).toEqual([]);
+    }
+    const repair = new Database(dbPath); repair.exec("DROP INDEX transport_catalog"); repair.close();
+    const server = startAgentBusServer({dbPath, token, hostname: "127.0.0.1", port: 0});
+    try {
+      expect((await fetch(server.url + "/v1/transport-catalog?machineId=node-a", {headers: {authorization: `Bearer ${token}`}})).status).toBe(200);
+    } finally { await server.stop(); }
+  } finally { rmSync(dir, {recursive: true, force: true}); }
+});
+
+test("server retains its existing persistent-database requirement", async () => {
+  const token = randomBytes(32).toString("hex");
+  let unexpected: ReturnType<typeof startAgentBusServer> | undefined;
+  try {
+    expect(() => {
+      unexpected = startAgentBusServer({dbPath: ":memory:", token, hostname: "127.0.0.1", port: 0});
+    }).toThrow("Access evidence requires a persistent SQLite filename");
+  } finally { await unexpected?.stop(); }
+});

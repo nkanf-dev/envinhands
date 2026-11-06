@@ -179,3 +179,18 @@ test("Windows relay fails closed before SSH for bad configuration, node IDs and 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+test("Windows names are passed as one -l argument and unsafe names never execute", async () => {
+  const calls: string[][] = [];
+  const runner: CommandRunner = async (_cmd,args) => { calls.push([...args]); return {exitCode:0}; };
+  for (const user of ["Jane Doe", "123agent"]) {
+    assert.equal((await checkWindowsAdminReadiness({...target, user}, runner)).ready, true);
+    const args = calls.at(-1)!;
+    assert.equal(args[args.indexOf("-l") + 1], user);
+    assert.equal(args[args.indexOf("-l") + 2], "--");
+  }
+  for (const user of ["-bad", "Jane ", "Jane.", "Jane\n", "Jane\tDoe", "Jane;id", "a".repeat(65)])
+    assert.equal((await checkWindowsAdminReadiness({...target, user}, runner)).ready, false);
+  assert.equal(calls.length, 2);
+});

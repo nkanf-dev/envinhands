@@ -6,7 +6,7 @@
  * A heartbeat only records receipt. This handler needs a trusted HTTPS boundary.
  */
 import { HttpError, response as reply, fields, bodyBytes as body, json, bearerAuth } from "./http.ts";
-import { Storage } from "./storage.ts";
+import { Storage, validMachineSshUser } from "./storage.ts";
 import { checkAdminReadiness, type ReadinessTarget, type ReadinessResult } from "./readiness.ts";
 
 const ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
@@ -62,8 +62,8 @@ export function createMachineApi({ dbPath, token, readinessTtlMs, verifier = che
           const name = text(data.name, "name", 200);
           const host = text(data.host, "host", 253);
           const os = text(data.os, "os", 100);
-          const sshUser = text(data.sshUser, "sshUser", 64);
-          if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(sshUser)) throw new HttpError(400, "Invalid sshUser");
+          const sshUser = os.toLowerCase() === "windows" ? data.sshUser : text(data.sshUser, "sshUser", 64);
+          if (!validMachineSshUser(sshUser, os)) throw new HttpError(400, "Invalid sshUser");
           const sshPort = data.sshPort === undefined ? 22 : data.sshPort;
           if (typeof sshPort !== "number" || !Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65535) throw new HttpError(400, "Invalid sshPort");
           try { return reply(202, { machine: storage.registerMachine({ id: machineId, name, host, os, sshPort, sshUser, relayNodeId }) }); }

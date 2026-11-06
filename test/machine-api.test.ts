@@ -306,3 +306,23 @@ test("a slow older verification cannot overwrite a newer failure", async () => {
     expect((await json(await call(api, "/v1/machines?includePending=true"))).machines).toEqual([]);
   } finally { api.close(); }
 });
+
+
+test("Windows SSH names keep spaces and leading digits through registration and verification", async () => {
+  const targets: ReadinessTarget[] = [];
+  const { api } = setup(async target => { targets.push(target); return ready; });
+  try {
+    for (const [i, sshUser] of ["Jane Doe", "123agent"].entries()) {
+      const id = `win-${i}`;
+      const res = await call(api, "/v1/machines", "POST", { ...input, id, os:"wInDoWs", sshUser });
+      expect(res.status).toBe(202);
+      expect((await json(res)).machine.sshUser).toBe(sshUser);
+      expect((await call(api, `/v1/machines/${id}/verify`, "POST")).status).toBe(200);
+      expect(targets.at(-1)?.user).toBe(sshUser);
+    }
+    for (const sshUser of ["-bad", "Jane ", "Jane.", "Jane\n", "Jane\tDoe", "Jane;id", "a".repeat(65)])
+      expect((await call(api, "/v1/machines", "POST", { ...input, id:"bad", os:"windows", sshUser })).status).toBe(400);
+    for (const os of ["linux", "macos"]) for (const sshUser of ["Jane Doe", "123agent"])
+      expect((await call(api, "/v1/machines", "POST", { ...input, id:"bad", os, sshUser })).status).toBe(400);
+  } finally { api.close(); }
+});

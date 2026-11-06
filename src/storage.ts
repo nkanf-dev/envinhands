@@ -35,6 +35,14 @@ function text(value: unknown, field: string, max: number): string {
   return value.trim();
 }
 
+/** Windows names may contain spaces or start with a digit. No SSH option or shell syntax. */
+export function validMachineSshUser(value: unknown, os: string): value is string {
+  if (typeof value !== "string" || /[\x00-\x1f\x7f]/.test(value)) return false;
+  return os.toLowerCase() === "windows"
+    ? value.length <= 64 && /^[A-Za-z0-9_]/.test(value) && !/[^A-Za-z0-9_. -]/.test(value) && !/[ .]$/.test(value)
+    : /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(value);
+}
+
 /** Open explicitly with Storage.open(path); close when finished. */
 export class Storage {
   private closed = false;
@@ -113,8 +121,8 @@ export class Storage {
     const name = text(input.name, "name", 200);
     const host = text(input.host, "host", 253);
     const os = text(input.os, "os", 100);
-    const sshUser = text(input.sshUser, "sshUser", 64);
-    if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(sshUser)) throw new Error("Invalid sshUser");
+    const sshUser = os.toLowerCase() === "windows" ? input.sshUser : text(input.sshUser, "sshUser", 64);
+    if (!validMachineSshUser(sshUser, os)) throw new Error("Invalid sshUser");
     const sshPort = input.sshPort === undefined ? 22 : input.sshPort;
     if (!Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65535) throw new Error("Invalid sshPort");
     const relayNodeId = input.relayNodeId === undefined ? null : identifier(input.relayNodeId, "relayNodeId");

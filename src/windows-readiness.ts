@@ -37,8 +37,8 @@ export async function checkWindowsAdminReadiness(target: ReadinessTarget, runner
   if (target.os.toLowerCase() !== "windows") return { status: "unsupported", ready: false,
     message: "This check supports only Windows administrator tokens." };
   const port = target.sshPort === undefined ? 22 : target.sshPort;
-  if (!validHost(target.host) || typeof target.user !== "string" ||
-      !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(target.user) ||
+  if (!validHost(target.host) || typeof target.user !== "string" || target.user.length > 64 ||
+      !/^[A-Za-z0-9_]/.test(target.user) || /[^A-Za-z0-9_. -]/.test(target.user) || /[ .]$/.test(target.user) ||
       !Number.isInteger(port) || port < 1 || port > 65535 || typeof runner !== "function") return NOT_READY;
   const proxyOptions: string[] = [];
   if (target.relayNodeId !== undefined) {

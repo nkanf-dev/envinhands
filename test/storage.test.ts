@@ -188,3 +188,19 @@ test("existing readiness schema migrates without losing state", () => {
     assert.equal(store.getMachine("old")?.status, "ready");
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+
+test("Windows SSH usernames preserve supported names and reject unsafe names", () => {
+  const store = Storage.open(":memory:");
+  try {
+    for (const [i, sshUser] of ["Jane Doe", "123agent"].entries()) {
+      const id = `win-${i}`;
+      assert.equal(store.registerMachine({ ...registration, id, os:"Windows", sshUser }).sshUser, sshUser);
+      assert.equal(store.getMachine(id)?.sshUser, sshUser);
+    }
+    for (const sshUser of ["-bad", "Jane ", "Jane.", "Jane\n", "Jane\tDoe", "Jane;id", "a".repeat(65)])
+      assert.throws(() => store.registerMachine({ ...registration, id:"bad", os:"windows", sshUser }), /Invalid sshUser/);
+    for (const os of ["linux", "macos"]) for (const sshUser of ["Jane Doe", "123agent"])
+      assert.throws(() => store.registerMachine({ ...registration, id:"bad", os, sshUser }), /Invalid sshUser/);
+  } finally { store.close(); }
+});

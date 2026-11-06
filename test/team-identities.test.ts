@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -140,6 +141,45 @@ describe("team public identity directory",()=>{
    await expect(c.upsert(item("node"),"delayed-create",null)).rejects.toThrow("409");
    expect((await c.getDevice("node")).revision).toBe(3);
   }finally{if(s2)await s2.stop(true);next?.close();await x.close();}
+ });
+ test("case-folded host identities cannot be registered across history or tombstones",async()=>{
+  const x=await setup();try {
+   const first=await x.client.upsert(item("Foo"),"foo-create",null) as any;
+   await expect(x.client.upsert(item("foo"),"case-collision",null)).rejects.toThrow("409");
+   await expect(x.client.getDevice("foo")).rejects.toThrow("409");
+   await expect(x.client.delete("foo","case-delete",null)).rejects.toThrow("409");
+   const headers={authorization:`Bearer ${TOKEN}`,"content-type":"application/json"};
+   expect((await fetch(`${x.base}/v1/team-identities`,{method:"PUT",headers,body:JSON.stringify(item("FOO"))})).status).toBe(409);
+   await x.client.delete("Foo","delete-foo",first.record.revision);
+   await expect(x.client.upsert(item("foo"),"case-after-delete",null)).rejects.toThrow("409");
+   await expect(x.client.upsert(item("foo"),"case-collision",null)).rejects.toThrow("409");
+   const tomb=await x.client.getDevice("Foo");
+   await x.client.upsert(item("Foo"),"recreate-foo",tomb.revision);
+   expect((await x.client.listPage()).records.map(v=>v.deviceId)).toEqual(["Foo"]);
+  }finally{await x.close();}
+ });
+ test("case-folding serializes concurrent distinct names across database connections",async()=>{
+  const x=await setup(), api2=createTeamIdentitiesApi({dbPath:x.path,token:TOKEN});const s2=Bun.serve({hostname:"127.0.0.1",port:0,fetch:api2.fetch});
+  try {const c=createTeamIdentitiesClient({baseUrl:`http://127.0.0.1:${s2.port}`,token:TOKEN,registration:REG});
+   const results=await Promise.allSettled([x.client.upsert(item("Host"),"case-a",null),c.upsert(item("host"),"case-b",null)]);
+   expect(results.filter(r=>r.status==="fulfilled").length).toBe(1);expect(results.filter(r=>r.status==="rejected").length).toBe(1);
+   expect((await x.client.listPage()).records.length).toBe(1);
+  }finally{await s2.stop(true);api2.close();await x.close();}
+ });
+ test("existing legacy case collisions are diagnosable and can be resolved by deleting one exact ID",async()=>{
+  const x=await setup();try {
+   const raw=new Database(x.path,{strict:true});
+   try {raw.query("INSERT INTO team_identity_history(device_id,payload) VALUES(?,?)").run("Old",JSON.stringify(item("Old")));
+    raw.query("INSERT INTO team_identity_history(device_id,payload) VALUES(?,?)").run("old",JSON.stringify(item("old")));
+   }finally{raw.close();}
+   await expect(x.client.listPage()).rejects.toThrow("409");
+   const a=await x.client.getDevice("Old"),b=await x.client.getDevice("old");expect(a.record?.deviceId).toBe("Old");expect(b.record?.deviceId).toBe("old");
+   await expect(x.client.upsert(item("Old"),"legacy-replace",a.revision)).rejects.toThrow("409");
+   await x.client.delete("old","legacy-remove",b.revision);
+   expect((await x.client.listPage()).records.map(v=>v.deviceId)).toEqual(["Old"]);
+   const keep=await x.client.getDevice("Old");await x.client.upsert(item("Old"),"legacy-keep",keep.revision);
+   await expect(x.client.upsert(item("old"),"legacy-revive",(await x.client.getDevice("old")).revision)).rejects.toThrow("409");
+  }finally{await x.close();}
  });
  test("formal signed mutations correlate business operation and audit across a lost response",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"directory-formal-")),dbPath=join(dir,"db.sqlite");

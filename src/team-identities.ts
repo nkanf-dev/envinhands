@@ -58,6 +58,7 @@ export function createTeamIdentitiesApi(options: {dbPath:string; token:string}) 
       payload TEXT
     );
     CREATE INDEX IF NOT EXISTS team_identity_history_device ON team_identity_history(device_id,revision DESC);
+    CREATE INDEX IF NOT EXISTS team_identity_history_device_nocase ON team_identity_history(device_id COLLATE NOCASE);
     CREATE TABLE IF NOT EXISTS team_identity_operations (
       operation_id TEXT PRIMARY KEY NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL
     );`);
@@ -65,7 +66,16 @@ export function createTeamIdentitiesApi(options: {dbPath:string; token:string}) 
   type Row={revision:number;device_id:string;payload:string|null};
   const record=(r:Row): TeamIdentity => {const v=input(JSON.parse(r.payload!));return {...v,publicKeyFingerprint:fingerprint(v.publicKey),hostKeyFingerprint:fingerprint(v.hostKey),revision:r.revision};};
   const current=(deviceId:string)=>db.query<Row,[string]>("SELECT * FROM team_identity_history WHERE device_id=? ORDER BY revision DESC LIMIT 1").get(deviceId);
+  // IDs are ASCII. SQLite NOCASE therefore matches OpenSSH alias case folding.
+  // Preserve existing historical spellings so legacy collisions can be diagnosed
+  // and reduced by explicitly deleting all but one of their live records.
+  const otherHistory=(deviceId:string)=>db.query<{device_id:string},[string,string]>("SELECT device_id FROM team_identity_history WHERE device_id = ? COLLATE NOCASE AND device_id != ? COLLATE BINARY LIMIT 1").get(deviceId,deviceId);
+  const otherLive=(deviceId:string)=>db.query<{device_id:string},[string,string]>(`SELECT h.device_id FROM team_identity_history h
+    WHERE h.device_id = ? COLLATE NOCASE AND h.device_id != ? COLLATE BINARY AND h.payload IS NOT NULL
+    AND h.revision=(SELECT MAX(x.revision) FROM team_identity_history x WHERE x.device_id=h.device_id) LIMIT 1`).get(deviceId,deviceId);
+  const caseConflict=(deviceId:string)=>current(deviceId)?!!otherLive(deviceId):!!otherHistory(deviceId);
   const put=db.transaction((v:TeamIdentityInput)=>{
+    if(caseConflict(v.deviceId)) throw new HttpError(409,"Device ID case conflicts with existing history");
     const payload=JSON.stringify(v), old=current(v.deviceId);
     if(old?.payload===payload) return {record:record(old),duplicate:true};
     db.query("INSERT INTO team_identity_history(device_id,payload) VALUES(?,?)").run(v.deviceId,payload);
@@ -73,6 +83,7 @@ export function createTeamIdentitiesApi(options: {dbPath:string; token:string}) 
   });
   const remove=db.transaction((deviceId:string)=>{
     const old=current(deviceId);
+    if(!old&&otherHistory(deviceId)) throw new HttpError(409,"Device ID case conflicts with existing history");
     if(!old||old.payload===null) return {deleted:false,revision:old?.revision??null};
     const r=db.query<{revision:number},[string]>("INSERT INTO team_identity_history(device_id,payload) VALUES(?,NULL) RETURNING revision").get(deviceId)!;
     return {deleted:true,revision:r.revision};
@@ -91,9 +102,11 @@ export function createTeamIdentitiesApi(options: {dbPath:string; token:string}) 
     const deviceId=typeof value==="string"?value:value.deviceId;
     const existing=current(deviceId);
     const actual=existing?.revision??null;
-    const result=actual===expectedRevision
-      ? {status:200,body:action==="upsert"?put(value as TeamIdentityInput):remove(value as string)}
-      : {status:409,body:{error:"Identity revision conflict"}};
+    const result=actual!==expectedRevision
+      ? {status:409,body:{error:"Identity revision conflict"}}
+      : ((action==="upsert" && caseConflict(deviceId)) || (action==="delete" && !existing && !!otherHistory(deviceId)))
+        ? {status:409,body:{error:"Device ID case conflicts with existing history"}}
+        : {status:200,body:action==="upsert"?put(value as TeamIdentityInput):remove(value as string)};
     db.query("INSERT INTO team_identity_operations(operation_id,payload_hash,result) VALUES(?,?,?)").run(operationId,hash,JSON.stringify(result));
     return result;
   });
@@ -106,6 +119,13 @@ export function createTeamIdentitiesApi(options: {dbPath:string; token:string}) 
     const max=db.query<{n:number},[]>("SELECT COALESCE(MAX(revision),0) AS n FROM team_identity_history").get()!.n;
     const snap=integer(sp.get("snapshot"),max,0,max),limit=integer(sp.get("limit"),100,1,200);
     const after=sp.has("after")?id(sp.get("after")):"";
+    // A legacy database may contain colliding live names. Never return a page
+    // that a caller could mistake for a safe host-key snapshot; GET by exact ID
+    // and explicit deletion remain available for diagnosis and recovery.
+    const collision=db.query<{device_id:string},[number]>(`SELECT h.device_id FROM team_identity_history h
+      WHERE h.revision=(SELECT MAX(x.revision) FROM team_identity_history x WHERE x.device_id=h.device_id AND x.revision<=?)
+      AND h.payload IS NOT NULL GROUP BY h.device_id COLLATE NOCASE HAVING COUNT(*)>1 LIMIT 1`).get(snap);
+    if(collision) throw new HttpError(409,"Live device IDs conflict by case; inspect and delete conflicting exact IDs");
     const rows=db.query<Row,[number,string,number]>(`SELECT h.* FROM team_identity_history h
       WHERE h.revision=(SELECT MAX(x.revision) FROM team_identity_history x WHERE x.device_id=h.device_id AND x.revision<=?)
       AND h.device_id>? AND h.payload IS NOT NULL ORDER BY h.device_id COLLATE BINARY LIMIT ?`).all(snap,after,limit+1);
@@ -120,7 +140,8 @@ export function createTeamIdentitiesApi(options: {dbPath:string; token:string}) 
       const url=new URL(req.url);if(url.pathname!=="/v1/team-identities") return response(404,{error:"Not found"});
       if(req.method==="GET") {
         if(url.searchParams.has("deviceId")) {
-          query(url,["deviceId"]); const row=current(id(url.searchParams.get("deviceId")));
+          query(url,["deviceId"]); const deviceId=id(url.searchParams.get("deviceId"));const row=current(deviceId);
+          if(!row&&otherHistory(deviceId)) throw new HttpError(409,"Device ID case conflicts with existing history");
           return response(200,{record:row?.payload?record(row):null,revision:row?.revision??null});
         }
         return response(200,page(url));

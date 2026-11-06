@@ -30,7 +30,7 @@ describe("status and machines",()=>{
    const x=harness(); const code=await runTeamStatusCli(["machines","--json"],{},x.io,{...fixed,team:{home:h}});
    expect(code).toBe(0); expect(x.err).toBe("");
    const result=JSON.parse(x.out);
-   expect(result).toEqual({ok:true,data:{command:"machines",checkedAt:"2026-01-01T00:00:00.000Z",localMachineId:"node-a",machines:[{id:"node-a",name:"A",os:"linux",sshUser:"alice",sshPort:2222,relayNodeId:"relay-a",status:"pending",state:"pending",endpoint:{host:"127.0.0.1",port:2222},checkedAt:null,errorCode:null}]},meta:{}});
+   expect(result).toEqual({ok:true,data:{command:"machines",checkedAt:"2026-01-01T00:00:00.000Z",localMachineId:"node-a",machines:[{id:"node-a",name:"A",os:"linux",sshUser:"alice",sshPort:2222,relayNodeId:"relay-a",status:"pending",host:"127.0.0.1",checkedAt:null}]},meta:{}});
    expect(x.out).not.toContain(token);
    expect(await fs.readFile(teamPrimeConfigPath(h),"utf8")).toEqual(before);
    const y=harness(); expect(await runTeamStatusCli(["status","--format","table"],{},y.io,{...fixed,team:{home:h}})).toBe(0);
@@ -43,7 +43,7 @@ describe("status and machines",()=>{
   const x=harness(async (_url,init)=>{calls.push(init!);return Response.json({machines:[{...machine,id:"z",status:"not-ready",checkedAt:"2026-01-01T00:00:00.000Z"},machine]});});
   expect(await runTeamStatusCli(["machines","--json"],env,x.io,fixed)).toBe(0);
   expect(JSON.parse(x.out).data.machines.map((m:{id:string})=>m.id)).toEqual(["node-1","z"]);
-  expect(JSON.parse(x.out).data.machines[1]).toEqual({id:"z",name:"Node One",os:"linux",sshUser:"alice",sshPort:22,relayNodeId:null,status:"not-ready",state:"not-ready",endpoint:{host:"host.local",port:22},checkedAt:"2026-01-01T00:00:00.000Z",errorCode:null});
+  expect(JSON.parse(x.out).data.machines[1]).toEqual({id:"z",name:"Node One",os:"linux",sshUser:"alice",sshPort:22,relayNodeId:null,status:"not-ready",host:"host.local",checkedAt:"2026-01-01T00:00:00.000Z"});
   expect(calls).toHaveLength(1);expect(calls[0].method).toBe("GET");expect(calls[0].redirect).toBe("manual");expect(x.out).not.toContain("private-token");expect(x.out).not.toContain("private-relay");
  });
  test("table output and empty catalog",async()=>{

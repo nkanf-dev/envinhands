@@ -10,10 +10,8 @@ export interface TeamStatusMachine {
   sshPort: number;
   relayNodeId: string | null;
   status: "pending" | "ready" | "not-ready";
-  state: "pending" | "ready" | "not-ready";
-  endpoint: { host: string; port: number } | null;
+  host: string;
   checkedAt: string | null;
-  errorCode: string | null;
 }
 export interface TeamStatusResult {
   command: "status" | "machines";
@@ -52,7 +50,7 @@ function parseMachines(value: unknown, secrets: string[]): TeamStatusMachine[] {
     }
     ids.add(m.id);
     if (secrets.some(secret => [m.id,m.name,m.os,m.host,m.sshUser,m.relayNodeId].some(field => typeof field === "string" && field.includes(secret)))) throw new Failure("INVALID_RESPONSE", "Invalid machine catalog response.", 5);
-    return { id: m.id, name:m.name, os:m.os, sshUser:m.sshUser as string | null, sshPort:m.sshPort as number, relayNodeId:m.relayNodeId as string | null, status:m.status as TeamStatusMachine["status"], state: m.status as TeamStatusMachine["state"], endpoint: {host:m.host, port:m.sshPort as number}, checkedAt:m.checkedAt as string | null, errorCode:null };
+    return { id: m.id, name:m.name, os:m.os, sshUser:m.sshUser as string | null, sshPort:m.sshPort as number, relayNodeId:m.relayNodeId as string | null, status:m.status as TeamStatusMachine["status"], host:m.host, checkedAt:m.checkedAt as string | null };
   });
   return machines.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
@@ -78,7 +76,7 @@ async function boundedJson(response: Response): Promise<unknown> {
 function render(result: TeamStatusResult): string {
   if (!result.ok) return `${result.error!.code}: ${result.error!.message}\n`;
   if (result.command === "status") {
-    const counts = ["ready", "pending", "not-ready"].map(state => `${state}=${result.machines.filter(m => m.state === state).length}`).join(" ");
+    const counts = ["ready", "pending", "not-ready"].map(state => `${state}=${result.machines.filter(m => m.status === state).length}`).join(" ");
     return `CONTROL  reachable\nMACHINES ${result.machines.length} ${counts}\nLOCAL    ${result.localMachineId ?? "-"}\n`;
   }
   const cell = (value: string) => value.replace(/[\x00-\x1f\x7f]/g, "?");

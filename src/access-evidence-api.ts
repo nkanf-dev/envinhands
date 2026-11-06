@@ -9,7 +9,11 @@ export function createAccessEvidenceApi(options:{dbPath:string;token:string}) {
       if(closed)return response(503,{error:"Access observations closed"});
       if(!authorized(request))return response(401,{error:"Unauthorized"},{"www-authenticate":"Bearer"});
       const url=new URL(request.url);if(url.pathname!=="/v1/access-evidence")return response(404,{error:"Not found"});
-      if(request.method==="GET")return response(200,url.searchParams.has("view") ? store.current(parseAccessCheckQuery(url.searchParams)) : store.list(parseAccessEvidenceQuery(url.searchParams)));
+      if(request.method==="GET") {
+        if (!url.searchParams.has("view")) return response(200,store.list(parseAccessEvidenceQuery(url.searchParams)));
+        const state = store.current(parseAccessCheckQuery(url.searchParams));
+        return response(200,{...state,...(url.searchParams.has("nonce") ? {nonce:url.searchParams.get("nonce")} : {})});
+      }
       if(request.method!=="POST")return response(405,{error:"Method not allowed"},{allow:"GET, POST"});
       if(url.search)throw new HttpError(400,"Unexpected query");
       const body=await json(request);

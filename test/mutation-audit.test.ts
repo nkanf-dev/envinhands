@@ -37,3 +37,21 @@ test("access observations cannot contradict the declared mutation actor",async()
   assert.equal((await fetch(server.url+"/v1/access-evidence",{method:"POST",headers:signed,body:JSON.stringify({requestId:"observation",evidence})})).status,409);
  }finally{await server.stop();await rm(root,{recursive:true,force:true});}
 });
+
+
+test("formal signed v2 scope and result must agree with declared actor",async()=>{
+ const root=await mkdtemp(join(tmpdir(),"access-v2-actor-")),dbPath=join(root,"db.sqlite"),token="v2-actor-fixture";
+ const server=startAgentBusServer({dbPath,token,hostname:"127.0.0.1",port:0,requireSignedMutations:true});
+ const headers={authorization:`Bearer ${token}`,"content-type":"application/json","x-envinhands-registration":Buffer.from(JSON.stringify(registration)).toString("base64url"),"x-envinhands-operation-id":"v2-actor"};
+ const post=(value:unknown)=>fetch(server.url+"/v1/access-evidence",{method:"POST",headers,body:JSON.stringify(value)});
+ const scope={registrationId:registration.registrationId,agentId:registration.agentId,sessionId:registration.sessionId,targetMachineId:"vm"};
+ try {
+  for(const key of ["registrationId","agentId","sessionId"]) assert.equal((await post({action:"begin",beginId:"bad-"+key,scope:{...scope,[key]:"other"}})).status,409);
+  const first=await post({action:"begin",beginId:"allowed",scope});assert.equal(first.status,201);
+  const {generation}=await first.json() as {generation:string};
+  assert.equal((await post({action:"commit",scope:{...scope,agentId:"other"},generation,result:{status:"unknown"}})).status,409);
+  const now=Date.now();const result={...scope,agentId:"other",routeId:"route",sshIdentityRef:"SHA256:"+"A".repeat(43),sshUser:"agent",hostKeyAlias:"trusted.local",os:"linux",checkedAt:new Date(now).toISOString(),expiresAt:new Date(now+30000).toISOString(),ready:true,status:"ready",verificationScope:"actual-client-ssh-identity-and-route"};
+  assert.equal((await post({action:"commit",scope,generation,result})).status,409);
+  assert.equal((await post({action:"commit",scope,generation,result:{status:"unknown"}})).status,200);
+ }finally{await server.stop();await rm(root,{recursive:true,force:true});}
+});

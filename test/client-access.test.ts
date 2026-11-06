@@ -14,8 +14,8 @@ test("admin evidence belongs only to actual client registration, route and bound
   const calls: Array<readonly string[]> = [];
   const evidence = await verifyClientAccess(options, { fingerprint, now: () => 1000,
     runner: async (_cmd, args) => { calls.push(args); return { exitCode: 0 }; } });
-  assert.equal(calls.length, 2); assert.equal(calls[0].at(-1), "true");
-  assert.deepEqual(calls[1].slice(-3), ["sudo", "-n", "true"]); assert.equal(evidence.ready, true);
+  assert.equal(calls.length, 2); assert.deepEqual(calls[0].slice(-2), ["echo", "envinhands-probe"]);
+  assert.equal(calls[1].at(-1), `sudo -n -- /bin/sh -c 'test "$(/usr/bin/id -u)" -eq 0'`); assert.equal(evidence.ready, true);
   const expected = { registrationId: evidence.registrationId, agentId: evidence.agentId, sessionId: evidence.sessionId,
     targetMachineId: evidence.targetMachineId, routeId: evidence.routeId, sshIdentityRef: evidence.sshIdentityRef, sshUser: evidence.sshUser, hostKeyAlias: evidence.hostKeyAlias };
   assert.equal(isClientAccessFresh(evidence, expected, 1099), true);

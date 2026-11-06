@@ -119,13 +119,15 @@ export function transportCatalogCandidates(page: TransportCatalogPage, machineId
   if (!id(machineId) || !local?.access?.identityFile || !local.access.knownHostsFile || !local.relayBinaryPath || !isAbsolute(local.relayBinaryPath) || /[%\x00-\x1f\x7f]/.test(local.relayBinaryPath)) throw new Error("Local SSH trust and compiled relay binary required");
   const valid = validatePage(page,machineId,now);
   const ranked = valid.routes.filter(v => v.status === "observed").sort((a,b) => Number(a.kind === "relay") - Number(b.kind === "relay") || a.priority - b.priority || a.routeId.localeCompare(b.routeId));
-  const routes: SshRoute[] = ranked.map(v => v.kind === "relay" ? {id:v.routeId,host:local.access.hostKeyAlias,relay:{relayNodeId:v.relayNodeId!,binaryPath:local.relayBinaryPath}} : {id:v.routeId,host:v.host!,port:v.port!});
+  const routes: SshRoute[] = ranked.map(v => v.kind === "relay" ? {id:v.routeId,host:"localhost",relay:{relayNodeId:v.relayNodeId!,binaryPath:local.relayBinaryPath}} : {id:v.routeId,host:v.host!,port:v.port!});
   // Validate trust even with no observations; never rely on SSH ambient config.
-  buildSshRouteArgv({id:"validation",host:local.access.hostKeyAlias},local.access);
+  // Alias is a trust ID, not necessarily a DNS name. Relay ProxyCommand
+  // chooses its target itself; localhost is only an unused SSH placeholder.
+  buildSshRouteArgv({id:"validation",host:"localhost"},local.access);
   for (const route of routes) buildSshRouteArgv(route,local.access);
   return {routes,priority:routes.map(r=>r.id)};
 }
-/** Probes 'true' only. The caller starts a task once and must not replay it on failure. */
+/** Probes a fixed non-privileged command. Never replay a caller task on failure. */
 export async function selectCatalogSshRoute(page: TransportCatalogPage, machineId: string, local: {access:SshAccess & {identityFile:string;knownHostsFile:string};relayBinaryPath:string}, options: {totalBudgetMs:number;probeTimeoutMs?:number}, dependencies: {runner?:CommandRunner;now?:()=>number} = {}) {
   const c = transportCatalogCandidates(page,machineId,local,dependencies.now?.() ?? Date.now());
   return selectSshRoute(c.routes,local.access,{...options,priority:c.priority},dependencies);

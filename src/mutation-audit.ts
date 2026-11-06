@@ -35,8 +35,11 @@ export function createMutationAudit(options: {dbPath: string; token: string; mac
       if (url.pathname === "/v1/access-evidence" && encoded) {
         try {
           const bytes = await bodyBytes(request.clone(), bodyLimit);
-          const value = JSON.parse(new TextDecoder().decode(bytes)) as {evidence?: {registrationId?: unknown;agentId?: unknown;sessionId?: unknown}};
-          if (!value.evidence || value.evidence.registrationId !== registration.registrationId || value.evidence.agentId !== registration.agentId || value.evidence.sessionId !== registration.sessionId)
+          const value = JSON.parse(new TextDecoder().decode(bytes)) as {action?: unknown; scope?: {registrationId?: unknown;agentId?: unknown;sessionId?: unknown}; evidence?: {registrationId?: unknown;agentId?: unknown;sessionId?: unknown}};
+          // V2 uses scope for both begin and commit. Its handler validates exact
+          // fields and also checks any committed result against that scope.
+          const identity = value.action === "begin" || value.action === "commit" ? value.scope : value.evidence;
+          if (!identity || identity.registrationId !== registration.registrationId || identity.agentId !== registration.agentId || identity.sessionId !== registration.sessionId)
             return response(409, {error: "Access observation identity does not match request attribution"});
         } catch { return response(400, {error: "Invalid access observation body"}); }
       }

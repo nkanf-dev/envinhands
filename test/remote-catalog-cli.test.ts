@@ -234,7 +234,7 @@ test("simulated Windows skips relay and can execute through a direct catalog rou
     assert.equal(result.outcome,"success");
     const lines=readFileSync(calls,"utf8").trim().split("\n");
     assert.equal(lines.length,2); // One direct probe and one task, never a relay probe.
-    assert.ok(lines[0].endsWith("127.0.0.1 true"));
+    assert.ok(lines[0].endsWith("127.0.0.1 echo envinhands-probe"));
     assert.ok(lines[1].endsWith("127.0.0.1 echo hello"));
     assert.ok(lines.every(line=>line.includes("StrictHostKeyChecking=yes") && !line.includes("ProxyCommand=")));
   } finally {

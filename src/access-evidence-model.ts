@@ -40,7 +40,8 @@ export function parseAccessEvidence(value: unknown): ClientAccessEvidence {
   const checkedAt = timestamp(v.checkedAt), expiresAt = timestamp(v.expiresAt);
   if (Date.parse(expiresAt) <= Date.parse(checkedAt) || Date.parse(expiresAt) - Date.parse(checkedAt) > 300000 || typeof v.ready !== "boolean" || v.status !== (v.ready ? "ready" : "not-ready") ||
       !["linux", "macos", "windows"].includes(String(v.os)) || v.verificationScope !== "actual-client-ssh-identity-and-route" ||
-      typeof v.sshUser !== "string" || !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(v.sshUser) || /[\r\n]/.test(v.sshUser) ||
+      typeof v.sshUser !== "string" || /[\x00-\x1f\x7f]/.test(v.sshUser) ||
+      (v.os === "windows" ? !/^[A-Za-z0-9_][A-Za-z0-9_. -]{0,63}$/.test(v.sshUser) || v.sshUser.endsWith(" ") || v.sshUser.endsWith(".") : !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(v.sshUser)) ||
       typeof v.hostKeyAlias !== "string" || !v.hostKeyAlias || v.hostKeyAlias.length > 253 || /[\x00-\x20\x7f]/.test(v.hostKeyAlias)) throw new AccessEvidenceInputError("Invalid access observation");
   return { registrationId: accessId(v.registrationId), agentId: accessId(v.agentId), sessionId: accessId(v.sessionId), targetMachineId: accessId(v.targetMachineId), routeId: accessId(v.routeId),
     sshIdentityRef: publicKeyFingerprint(v.sshIdentityRef), sshUser: v.sshUser, hostKeyAlias: v.hostKeyAlias, os: v.os as ClientAccessEvidence["os"], checkedAt, expiresAt, ready: v.ready,
@@ -88,6 +89,7 @@ export function parseAccessCheckCommit(value: unknown) {
 }
 export function parseAccessCheckQuery(params: URLSearchParams): AccessCheckScope {
   const keys = ["view", "registrationId", "agentId", "sessionId", "targetMachineId"];
-  if ([...params.keys()].some(k => !keys.includes(k)) || keys.some(k => params.getAll(k).length !== 1) || params.get("view") !== "current") throw new AccessEvidenceInputError("Invalid check query");
+  if ([...params.keys()].some(k => !keys.includes(k) && k !== "nonce") || keys.some(k => params.getAll(k).length !== 1) || params.getAll("nonce").length > 1 || params.get("view") !== "current") throw new AccessEvidenceInputError("Invalid check query");
+  if (params.has("nonce")) accessId(params.get("nonce"));
   return parseAccessCheckScope(Object.fromEntries(keys.slice(1).map(k => [k, params.get(k)])));
 }

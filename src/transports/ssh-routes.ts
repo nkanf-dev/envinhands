@@ -29,10 +29,18 @@ function host(value: string): boolean {
   return typeof value === "string" && !/[\x00-\x20\x7f]/.test(value) && value.length <= 253 && (isIP(value) !== 0 ||
     value.split(".").every(p => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(p)));
 }
+/** A safe machine ID used as a single OpenSSH HostKeyAlias config value. */
+export function validSshHostKeyAlias(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 128 && /^[A-Za-z0-9_]/.test(value) && !/[^A-Za-z0-9._-]/.test(value);
+}
+/** SSH receives this as the argument to -l, never as shell text. */
+export function validSshUser(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 64 && /^[A-Za-z0-9_]/.test(value) && !/[^A-Za-z0-9_. -]/.test(value) && !/[ .]$/.test(value);
+}
 export function buildSshRouteArgv(route: SshRoute, access: SshAccess): string[] {
   if (!route || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(route.id) || /[\r\n]/.test(route.id) || !host(route.host) ||
       !Number.isInteger(route.port ?? 22) || (route.port ?? 22) < 1 || (route.port ?? 22) > 65535 ||
-      !access || !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(access.user) || /[\r\n]/.test(access.user) || !host(access.hostKeyAlias) ||
+      !access || !validSshUser(access.user) || !validSshHostKeyAlias(access.hostKeyAlias) ||
       (route.jump !== undefined && !host(route.jump))) throw new Error("Invalid SSH route");
   let proxy: string | undefined;
   if (route.relay !== undefined) {
@@ -81,7 +89,7 @@ export function buildSshRouteArgv(route: SshRoute, access: SshAccess): string[] 
   args.push("-p", String(route.port ?? 22), "-l", access.user, "--", route.host);
   return args;
 }
-/** Probe authentication + host trust via true. Total budget bounds all attempts. */
+/** Probe authentication + host trust, not administrative access. */
 export async function selectSshRoute(routes: readonly SshRoute[], access: SshAccess, options: {
   priority: readonly string[]; totalBudgetMs: number; probeTimeoutMs?: number;
 }, dependencies: { runner?: CommandRunner; now?: () => number } = {}): Promise<SelectedSshRoute> {
@@ -105,7 +113,7 @@ export async function selectSshRoute(routes: readonly SshRoute[], access: SshAcc
     const remaining = Math.floor(deadline - now());
     if (remaining <= 0) break;
     let exitCode: number | null = null;
-    try { exitCode = (await runner("ssh", [...argv.get(route.id)!, "true"], Math.min(remaining, timeout))).exitCode; }
+    try { exitCode = (await runner("ssh", [...argv.get(route.id)!, "echo", "envinhands-probe"], Math.min(remaining, timeout))).exitCode; }
     catch { /* A failed probe never authorizes connection or command replay. */ }
     const status = exitCode === 0 ? "healthy" : "failed";
     observations.push({ routeId: route.id, exitCode, status });

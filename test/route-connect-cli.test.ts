@@ -19,7 +19,7 @@ test("probes P2P then relay and opens exactly one interactive session with stric
     runner:async (_c,args) => { probes.push([...args]); return {exitCode: probes.length === 1 ? 255 : 0}; },
     spawn:(_c,args,options) => { sessions.push({args:[...args],options}); return fakeChild(17); }});
   assert.equal(rc,17); assert.equal(probes.length,2); assert.equal(sessions.length,1);
-  for (const args of probes) { assert.equal(args.at(-1),"true"); assert.ok(args.includes("-T")); assert.ok(args.includes("-n")); assert.ok(args.includes("StrictHostKeyChecking=yes")); assert.ok(args.includes("HostKeyAlias=node-1")); assert.ok(args.includes("UserKnownHostsFile=/tmp/known")); }
+  for (const args of probes) { assert.deepEqual(args.slice(-2),["echo","envinhands-probe"]); assert.ok(args.includes("-T")); assert.ok(args.includes("-n")); assert.ok(args.includes("StrictHostKeyChecking=yes")); assert.ok(args.includes("HostKeyAlias=node-1")); assert.ok(args.includes("UserKnownHostsFile=/tmp/known")); }
   const session = sessions[0]; assert.ok(session.args.includes("-tt")); assert.ok(!session.args.includes("-T") && !session.args.includes("-n") && !session.args.includes("true")); assert.ok(session.args.some(a=>a.includes("ProxyCommand="))); assert.equal(session.options.shell,false); assert.equal(session.options.stdio,"inherit"); assert.equal(session.options.env.ENVINHANDS_TOKEN,undefined);
   assert.ok(errors.join(" ").includes("not retried")); assert.ok(!JSON.stringify({probes,sessions,errors}).includes(token));
 });
@@ -70,4 +70,24 @@ test("abort cancels a pending catalog fetch or an active interactive child", asy
     launched++; const child=new EventEmitter() as ChildProcess; child.kill=()=>{killed=true; return true;}; queueMicrotask(()=>b.abort()); return child;
   }});
   assert.equal(rc,130); assert.equal(launched,1); assert.equal(killed,true);
+});
+
+
+test("machine IDs with underscores and space-containing SSH users remain separate argv", async () => {
+  let probe: string[] = [], interactive: string[] = [];
+  const r = route("direct", { machineId: "nas_1" });
+  const rc = await runRouteConnectCli(["connect", "nas_1", "Jane Doe"], { env, isTTY:true,
+    fetch: async () => Response.json({ machineId: "nas_1", routes: [r] }),
+    runner: async (_cmd, args) => { probe = [...args]; return { exitCode: 0 }; },
+    spawn: (_cmd, args, options) => { assert.equal(options.shell, false); interactive = [...args]; return fakeChild(); },
+  });
+  assert.equal(rc, 0);
+  for (const args of [probe, interactive]) {
+    assert.ok(args.includes("HostKeyAlias=nas_1"));
+    assert.equal(args[args.indexOf("-l") + 1], "Jane Doe");
+  }
+  for (const user of ["-bad", "Jane ", "Jane.", "Jane\n", "Jane;id", "A".repeat(65)])
+    assert.equal(await runRouteConnectCli(["connect", "nas_1", user], {stderr:()=>{}}), 2);
+  for (const id of ["nas%h", "nas 1", "nas\n", 'nas"1'])
+    assert.equal(await runRouteConnectCli(["connect", id, "Jane Doe"], {stderr:()=>{}}), 2);
 });

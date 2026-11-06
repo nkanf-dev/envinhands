@@ -16,7 +16,7 @@ test("real probe orchestration tries preferred route then falls back, keeping th
   assert.equal(result.route.id, "backup"); assert.deepEqual(result.observations.map(o => o.status), ["failed", "healthy"]);
   for (const args of calls) {
     assert.ok(args.includes("StrictHostKeyChecking=yes")); assert.ok(args.includes("HostKeyAlias=trusted-host"));
-    assert.equal(args.at(-1), "true"); assert.ok(args.includes("BatchMode=yes"));
+    assert.deepEqual(args.slice(-2), ["echo", "envinhands-probe"]); assert.ok(args.includes("BatchMode=yes"));
   }
   assert.equal(result.argv.includes("true"), false); // No remote task was run by route selection.
 });
@@ -52,7 +52,7 @@ test("relay fallback keeps the same trust and returns exactly the probed SSH arg
       assert.equal(exe, "ssh"); calls.push([...args]); return { exitCode: calls.length === 1 ? 255 : 0 };
     } });
   assert.equal(selected.route.id, "reverse");
-  assert.deepEqual(calls[1], [...selected.argv, "true"]);
+  assert.deepEqual(calls[1], [...selected.argv, "echo", "envinhands-probe"]);
   assert.ok(calls[1].includes("ProxyCommand='/opt/envinhands' proxy 'nas-1'"));
   for (const args of calls) {
     assert.ok(args.includes("HostKeyAlias=trusted-host"));
@@ -137,7 +137,7 @@ test("real ssh isolates identity from appended config keys and existing masters"
     for (const key of [keyA, keyB, hostKey]) assert.equal(run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key]).status, 0);
     const { readFileSync } = await import("node:fs");
     writeFileSync(join(dir, "authorized_keys"), readFileSync(keyB + ".pub"));
-    const known = join(dir, "known hosts"), alias = "trusted-host";
+    const known = join(dir, "known hosts"), alias = "nas_1";
     writeFileSync(known, `${alias} ${readFileSync(hostKey + ".pub", "utf8")}`);
     const user = userInfo().username;
     const config = join(dir, "sshd_config");
@@ -168,7 +168,17 @@ ${penalties}LogLevel ERROR
     const route = { id: "local", host: "127.0.0.1", port };
     const accessA = { user, hostKeyAlias: alias, identityFile: keyA, knownHostsFile: known };
     const argsA = buildSshRouteArgv(route, accessA), argsB = buildSshRouteArgv(route, { ...accessA, identityFile: keyB });
-    assert.equal(run("ssh", [...argsB, "true"]).status, 0, "key B must authenticate");
+    assert.equal(run("ssh", [...argsB, "true"]).status, 0, "key B must authenticate with nas_1 host trust");
+    const selected = await selectSshRoute([route], { ...accessA, identityFile: keyB },
+      { priority: [], totalBudgetMs: 5000 }, { runner: async (_exe, args) => {
+        assert.deepEqual(args.slice(-2), ["echo", "envinhands-probe"]);
+        const probe = run("ssh", [...args]);
+        assert.equal(probe.stdout.trim(), "envinhands-probe");
+        return { exitCode: probe.status };
+      } });
+    assert.equal(selected.observations[0]?.status, "healthy");
+    const wrongAlias = buildSshRouteArgv(route, { ...accessA, identityFile: keyB, hostKeyAlias: "nas_2" });
+    assert.notEqual(run("ssh", [...wrongAlias, "true"]).status, 0, "different aliases must not share host trust");
     assert.notEqual(run("ssh", [...argsA, "true"]).status, 0, "key A must be rejected");
     const extra = join(dir, "client_config"), socket = masterSocket;
     writeFileSync(extra, `Host *
@@ -220,4 +230,22 @@ ${penalties}LogLevel ERROR
     daemon?.kill();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test("OpenSSH receives a Windows-style user as one -l argument", () => {
+  const route = { id: "r", host: "127.0.0.1" };
+  for (const user of ["Jane Doe", "123agent", "_service"]) {
+    const args = buildSshRouteArgv(route, { ...access, user, hostKeyAlias: "nas_1" });
+    assert.equal(args[args.indexOf("-l") + 1], user);
+    const result = spawnSync("ssh", ["-G", ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0);
+    assert.ok(result.stdout.split(/\r?\n/).includes(`user ${user}`));
+    assert.ok(result.stdout.split(/\r?\n/).includes("hostkeyalias nas_1"));
+  }
+  for (const user of ["", "-bad", "Jane ", "Jane.", "Jane\n", "Jane\tDoe", "Jane;touch", "Jane $(id)", "A".repeat(65)])
+    assert.throws(() => buildSshRouteArgv(route, { ...access, user }));
+  for (const hostKeyAlias of ["-bad", "nas 1", "nas%h", 'nas"1', "nas\n", "a".repeat(129)])
+    assert.throws(() => buildSshRouteArgv(route, { ...access, hostKeyAlias }));
+  assert.throws(() => buildSshRouteArgv({ ...route, host: "nas_1" }, access));
 });

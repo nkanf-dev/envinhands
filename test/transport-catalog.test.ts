@@ -38,7 +38,7 @@ test("real HTTP and SQLite: team observations, isolation, expiry, restart and sa
     const selected=await selectCatalogSshRoute(page,"node-1",local,{totalBudgetMs:1000},{now:()=>clock,runner:async (_exe,args)=>{calls.push([...args]); return {exitCode:calls.length<3?255:0};}});
     assert.equal(selected.route.id,"nas"); assert.deepEqual(selected.observations.map(x=>x.status),["failed","failed","healthy"]);
     assert.ok(calls[2].includes("ProxyCommand='/opt/local/envinhands' proxy 'nas-1'"));
-    for(const args of calls) { assert.equal(args.at(-1),"true"); assert.ok(args.includes("HostKeyAlias=stable-host")); assert.ok(args.includes("UserKnownHostsFile=/tmp/local-known-hosts")); }
+    for(const args of calls) { assert.deepEqual(args.slice(-2),["echo","envinhands-probe"]); assert.ok(args.includes("HostKeyAlias=stable-host")); assert.ok(args.includes("UserKnownHostsFile=/tmp/local-known-hosts")); }
     assert.equal(selected.argv.includes("true"),false);
     clock+=6000; const expired=await (await get("node-1")).json() as {routes:{status:string}[]};
     assert.ok(expired.routes.every(r=>r.status==="unknown"));
@@ -203,4 +203,25 @@ test("concurrent same-route updates preserve the newest observation across conne
     assert.equal((await post(api,"old-first",999)).status,409);
     assert.equal((await post(other,"new-first",999)).status,409);
   } finally { api.close(); other.close(); rmSync(dir,{recursive:true,force:true}); }
+});
+
+
+test("underscored machine alias stays distinct from the relay placeholder host", async () => {
+  const now = Date.now();
+  const page = { machineId: "nas_1", routes: [
+    { machineId: "nas_1", routeId: "direct", kind: "direct" as const, controller: "c", host: "127.0.0.1", port: 22, priority: 1, observedAt: now, ttlMs: 60000, status: "observed" as const },
+    { machineId: "nas_1", routeId: "relay", kind: "relay" as const, controller: "c", relayNodeId: "node", priority: 2, observedAt: now, ttlMs: 60000, status: "observed" as const },
+  ] };
+  const local = { access: { user: "Jane Doe", hostKeyAlias: "nas_1", identityFile: "/tmp/id", knownHostsFile: "/tmp/known" }, relayBinaryPath: "/tmp/proxy" };
+  const candidates = transportCatalogCandidates(page, "nas_1", local, now);
+  assert.equal(candidates.routes[1].host, "localhost");
+  const calls: string[][] = [];
+  const selected = await selectCatalogSshRoute(page, "nas_1", local, {totalBudgetMs: 1000}, {now: () => now, runner: async (_c,args) => {
+    calls.push([...args]); return { exitCode: calls.length === 1 ? 255 : 0 };
+  }});
+  assert.equal(selected.route.id, "relay");
+  assert.ok(calls[1].includes("HostKeyAlias=nas_1"));
+  assert.ok(calls[1].includes("ProxyCommand='/tmp/proxy' proxy 'node'"));
+  assert.ok(!calls[1].some(arg => arg.includes("proxy 'localhost'")));
+  assert.throws(() => transportCatalogCandidates({ ...page, routes: [{...page.routes[0], host:"nas_1"}] }, "nas_1", local, now));
 });

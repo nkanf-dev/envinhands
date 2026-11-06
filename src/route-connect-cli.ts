@@ -2,7 +2,7 @@
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import { fetchTransportCatalog, selectCatalogSshRoute } from "./transport-catalog.ts";
-import { SshRoutesUnavailable } from "./transports/ssh-routes.ts";
+import { SshRoutesUnavailable, validSshHostKeyAlias, validSshUser } from "./transports/ssh-routes.ts";
 import type { CommandRunner } from "./readiness.ts";
 
 type Fetcher = (url: URL, init: RequestInit) => Promise<Response>;
@@ -31,8 +31,7 @@ export async function runRouteConnectCli(args: readonly string[], deps: RouteCon
   if (args.length !== 3 || args[0] !== "connect") return fail("Usage: envinhands connect MACHINE_ID USER", 2);
   const [, machineId, user] = args as [string, string, string];
   // hostKeyAlias must be a locally supplied stable machine ID, not a catalog field.
-  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(machineId) || machineId.length > 128 ||
-      !/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(user)) return fail("Invalid machine ID or SSH user.", 2);
+  if (!validSshHostKeyAlias(machineId) || !validSshUser(user)) return fail("Invalid machine ID or SSH user.", 2);
   if (signal?.aborted) return fail("Connection cancelled.", 130);
   if (!(deps.isTTY ?? Boolean(process.stdin.isTTY && process.stdout.isTTY))) return fail("Interactive SSH requires a TTY. Run this command in a terminal; check SSH keys, known_hosts and network separately for non-interactive diagnosis.", 2);
   if (!env.ENVINHANDS_URL || !env.ENVINHANDS_TOKEN || !env.ENVINHANDS_SSH_IDENTITY || !env.ENVINHANDS_SSH_KNOWN_HOSTS)

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { Database } from "bun:sqlite";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -116,10 +117,10 @@ test("generation checks serialize begin/commit across connections and survive re
   const other = { ...scope, targetMachineId: "other" };
   const begin = (store: typeof a, id: string, sc = scope) => store.begin({ action:"begin", beginId:id, scope:sc });
   const commit = (store: typeof a, generation: string, result: unknown, sc = scope) => store.commit({ action:"commit", generation, scope:sc, result });
-  const fresh = (ready: boolean) => { const now=Date.now(); return { ...evidence, checkedAt:new Date(now).toISOString(), expiresAt:new Date(now+60000).toISOString(), ready, status:ready?"ready":"not-ready" }; };
+  const fresh = (ready: boolean, begunAt?: string) => { const now=begunAt ? Date.parse(begunAt) : Date.now(); return { ...evidence, checkedAt:new Date(now).toISOString(), expiresAt:new Date(now+60000).toISOString(), ready, status:ready?"ready":"not-ready" }; };
   try {
     assert.equal(a.current(scope).status, "unknown");
-    const first=begin(a,"first"), positive=fresh(true); commit(b, first.generation, positive);
+    const first=begin(a,"first"), positive=fresh(true,first.begunAt); commit(b, first.generation, positive);
     assert.equal(a.current(scope).status, "ready");
     const unrelated=begin(b,"other",other); assert.equal(a.current(scope).status,"ready");
     const otherClient = { ...scope, registrationId:"registration-b", agentId:"agent-b", sessionId:"session-b" };
@@ -129,7 +130,7 @@ test("generation checks serialize begin/commit across connections and survive re
     const second=begin(b,"second"); assert.equal(a.current(scope).status,"unknown");
     assert.equal(begin(a,"first").generation, first.generation); // retry must not roll back the newer begin
     assert.throws(() => commit(a, first.generation, positive), /not pending/);
-    const failure=fresh(false); commit(a, second.generation, failure);
+    const failure=fresh(false,second.begunAt); commit(a, second.generation, failure);
     assert.equal(b.current(scope).status,"not-ready");
     assert.throws(() => commit(a, second.generation, fresh(true)), /not pending/);
     commit(b, unrelated.generation, {status:"unknown"}, other);
@@ -144,7 +145,7 @@ test("generation checks serialize begin/commit across connections and survive re
     a.close(); b.close(); a=createAccessEvidenceStore(path); b=createAccessEvidenceStore(path);
     assert.equal(a.current(scope).status,"unknown");
     assert.throws(() => commit(a,second.generation,fresh(true)), /not pending/);
-    const fourth=begin(a,"fourth"); const expiring={...fresh(true)}; expiring.expiresAt=new Date(Date.parse(expiring.checkedAt)+200).toISOString();
+    const fourth=begin(a,"fourth"); const expiring={...fresh(true,fourth.begunAt)}; expiring.expiresAt=new Date(Date.parse(expiring.checkedAt)+200).toISOString();
     commit(a,fourth.generation,expiring); assert.equal(b.current(scope).status,"ready");
     await Bun.sleep(220); assert.equal(b.current(scope).status,"unknown");
     const fifth=begin(a,"fifth");
@@ -161,8 +162,8 @@ test("generation Request API fails closed and keeps legacy API unchanged", async
   const get=() => api.fetch(new Request(`http://local/v1/access-evidence?${new URLSearchParams({view:"current",...scope})}`,{headers:{authorization:`Bearer ${token}`}}));
   try {
     const initial=await get(); assert.equal(initial.headers.get("cache-control"),"no-store"); assert.equal(((await initial.json()) as {status:string}).status,"unknown");
-    const r=await post({action:"begin",beginId:"http-begin",scope}); assert.equal(r.status,201); const {generation}=await r.json() as {generation:string};
-    const now=Date.now(), result={...evidence,checkedAt:new Date(now).toISOString(),expiresAt:new Date(now+60000).toISOString()};
+    const r=await post({action:"begin",beginId:"http-begin",scope}); assert.equal(r.status,201); const {generation,begunAt}=await r.json() as {generation:string;begunAt:string};
+    const now=Date.parse(begunAt), result={...evidence,checkedAt:new Date(now).toISOString(),expiresAt:new Date(now+60000).toISOString()};
     assert.equal((await post({action:"commit",generation,scope,result})).status,200);
     assert.equal(((await (await get()).json()) as {status:string}).status,"ready");
     assert.equal((await post({action:"begin",beginId:"http-next",scope})).status,201);
@@ -179,4 +180,76 @@ test("generation Request API fails closed and keeps legacy API unchanged", async
     assert.equal((await api.fetch(new Request("http://local/v1/access-evidence?view=current"))).status,401);
     api.close(); assert.equal((await get()).status,503);
   } finally { api.close(); await rm(dir,{recursive:true,force:true}); }
+});
+
+
+test("v2 detects server wall clock rollback against monotonic elapsed and never resurrects expiry", async () => {
+  const dir=await mkdtemp(join(tmpdir(),"access-clock-")), path=join(dir,"state.sqlite");
+  const changes=createChangeStore(path);changes.register(registration);changes.close();
+  let wall=Date.now(), monotonic=0;
+  const store=createAccessEvidenceStore(path,{now:()=>wall,monotonic:()=>monotonic});
+  const scope={registrationId:registration.registrationId,agentId:registration.agentId,sessionId:registration.sessionId,targetMachineId:"vm"};
+  try {
+    const begun=store.begin({action:"begin",beginId:"clock-one",scope});
+    const observation={...evidence,checkedAt:begun.begunAt,expiresAt:new Date(Date.parse(begun.begunAt)+10000).toISOString()};
+    store.commit({action:"commit",generation:begun.generation,scope,result:observation});
+    assert.equal(store.current(scope).status,"ready");
+    monotonic+=1000;wall+=500;
+    assert.ok(Date.parse(store.current(scope).serverNow) - Date.parse(begun.begunAt) >= 1000); // slow wall slew cannot extend TTL
+    monotonic+=3000;wall+=3000;assert.equal(store.current(scope).status,"ready");
+    monotonic+=3000;wall-=1000;assert.equal(store.current(scope).status,"unknown");
+    assert.equal(store.current(scope).status,"unknown"); // old epoch remains invalid after rebasing
+    const fixed=store.begin({action:"begin",beginId:"after-clock-change",scope});
+    const newObservation={...observation,checkedAt:fixed.begunAt,expiresAt:new Date(Date.parse(fixed.begunAt)+10000).toISOString()};
+    store.commit({action:"commit",generation:fixed.generation,scope,result:newObservation});
+    assert.equal(store.current(scope).status,"ready");
+    wall+=20000;monotonic+=20000;assert.equal(store.current(scope).status,"unknown");
+    wall-=12000;assert.equal(store.current(scope).status,"unknown"); // no resurrection after forward then rollback
+    const recovered=store.begin({action:"begin",beginId:"backwards-recovered",scope});
+    assert.ok(recovered.generation); // no NTP wait: a new check is permitted
+  }finally{store.close();await rm(dir,{recursive:true,force:true});}
+});
+
+
+test("a new service process never resurrects pre-restart ready or commits an old pending check",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"access-clock-restart-")),path=join(dir,"db.sqlite");
+ const changes=createChangeStore(path);changes.register(registration);changes.close();
+ const scope={registrationId:registration.registrationId,agentId:registration.agentId,sessionId:registration.sessionId,targetMachineId:"vm"};
+ const a=createAccessEvidenceStore(path,{epoch:"process-one"});
+ try{
+  const before=a.begin({action:"begin",beginId:"restart-1",scope});
+  const observed={...evidence,checkedAt:before.begunAt,expiresAt:new Date(Date.parse(before.begunAt)+60000).toISOString()};
+  a.commit({action:"commit",scope,generation:before.generation,result:observed});assert.equal(a.current(scope).status,"ready");
+  const b=createAccessEvidenceStore(path,{epoch:"process-two"});
+  try{
+   assert.equal(b.current(scope).status,"unknown");
+   assert.throws(()=>b.commit({action:"commit",scope,generation:before.generation,result:observed}),/server restarted/);
+   const fresh=b.begin({action:"begin",beginId:"restart-2",scope});
+   const renewed={...observed,checkedAt:fresh.begunAt,expiresAt:new Date(Date.parse(fresh.begunAt)+60000).toISOString()};
+   b.commit({action:"commit",scope,generation:fresh.generation,result:renewed});assert.equal(b.current(scope).status,"ready");
+  }finally{b.close();}
+ }finally{a.close();await rm(dir,{recursive:true,force:true});}
+});
+
+
+test("old v2 SQLite schema upgrades in place before using clock epochs",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"access-clock-migration-")),path=join(dir,"db.sqlite");
+ const changes=createChangeStore(path);changes.register(registration);changes.close();
+ const db=new Database(path);db.exec("CREATE TABLE access_check_current(scope TEXT PRIMARY KEY,generation TEXT NOT NULL,begun_at TEXT NOT NULL,result TEXT)");db.close();
+ const store=createAccessEvidenceStore(path);
+ const scope={registrationId:registration.registrationId,agentId:registration.agentId,sessionId:registration.sessionId,targetMachineId:"vm"};
+ try {
+  const b=store.begin({action:"begin",beginId:"after-migration",scope});
+  const e={...evidence,checkedAt:b.begunAt,expiresAt:new Date(Date.parse(b.begunAt)+60000).toISOString()};
+  store.commit({action:"commit",scope,generation:b.generation,result:e});assert.equal(store.current(scope).status,"ready");
+ }finally{store.close();await rm(dir,{recursive:true,force:true});}
+});
+
+
+test("Windows usernames follow directory syntax without relaxing Unix or allowing control characters",()=>{
+ const win={...evidence,os:"windows",sshUser:"Jane Doe"};
+ assert.equal(parseAccessEvidence(win).sshUser,"Jane Doe");
+ for(const name of ["Jane Doe ","Jane Doe.","Jane\nDoe","Jane;command","-bad"," Jane"])assert.throws(()=>parseAccessEvidence({...win,sshUser:name}));
+ assert.throws(()=>parseAccessEvidence({...win,os:"linux"}));
+ assert.throws(()=>parseAccessEvidence({...win,os:"macos"}));
 });

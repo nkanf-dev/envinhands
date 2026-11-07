@@ -177,7 +177,7 @@ test("real HTTP discovery exceeds 2 MiB and rejects topology changes and restart
       return new Response(data,{status:res.status,headers:res.headers});
     }) as typeof fetch});
     const agents=await client.discover();
-    expect(agents).toHaveLength(10000); expect(transferred).toBeGreaterThan(2*1024*1024); expect(requests).toBe(100);
+    expect(agents).toHaveLength(10000); expect(transferred).toBeGreaterThan(2*1024*1024); expect(requests).toBeLessThanOrEqual(11);
     expect(new Set(agents.map(a=>a.id)).size).toBe(10000);
     const first=await (await fetch(`${origin}/v1/native-mesh/agents?limit=1`,{headers})).json() as {revision:string;nextCursor:string};
     const post=new Request(`${origin}/v1/native-mesh/agents`,{method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({hostId:"host",agentId:"new",parentId:null,name:"new",state:"active"})});

@@ -12,7 +12,7 @@
  * means restart discovery (including topology change, expiry, restart, or routing to another
  * instance). Paging is not a lease or a liveness check. The unparameterized
  * legacy list is bounded and may return 413.
- * Upgrade all servers before clients. Route subsequent pages to the same server.
+ * Clients negotiate the first page limit with older servers. Route subsequent pages to the same server.
  * Every page is authenticated using the shared bearer token; that token does not
  * identify individual agents. Discovery has one timeoutMs deadline (default
  * 10 seconds), and
@@ -372,8 +372,8 @@ export function createNativeMeshApi(options: {dbPath: string; token: string}) {
 }
 class MeshBridge extends PrimeBridge {
   async register(r: MeshRegistration): Promise<void> { await this.request("/v1/native-mesh/agents", "POST", r); }
-  async observations(after?: string, revision?: string): Promise<unknown> {
-    const params = new URLSearchParams({limit: String(MAX_PAGE)});
+  async observations(limit: number, after?: string, revision?: string): Promise<unknown> {
+    const params = new URLSearchParams({limit: String(limit)});
     if (after !== undefined && revision !== undefined) { params.set("after", after); params.set("revision", revision); }
     return this.request(`/v1/native-mesh/agents?${params}`, "GET", undefined, true, MAX_BYTES);
   }
@@ -413,9 +413,12 @@ export class NativeMesh {
     };
     const bus = new MeshBridge({...this.options, fetch: fetcher});
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Negotiate only before any page is accepted. Keep the selected limit across
+    // snapshot retries; a continuation error must never silently downgrade it.
+    const paging = {limit: 4000, negotiating: true};
     const scan = async () => {
       for (let attempt = 0; attempt < 3; attempt++) {
-        try { return await this.discoverOnce(bus, budget); }
+        try { return await this.discoverOnce(bus, budget, paging); }
         catch (error) { if (!(error instanceof BridgeError && error.status === 409) || attempt === 2) throw error; }
       }
       throw new Error("Discovery changed");
@@ -427,11 +430,22 @@ export class NativeMesh {
       ]);
     } finally { if (timer !== undefined) clearTimeout(timer); controller.abort(); }
   }
-  private async discoverOnce(bus: MeshBridge, budget: {bytes: number; records: number}): Promise<MeshObservation[]> {
+  private async discoverOnce(bus: MeshBridge, budget: {bytes: number; records: number}, paging: {limit: number; negotiating: boolean}): Promise<MeshObservation[]> {
     const results: MeshObservation[] = [], seen = new Set<string>();
     let after: string | undefined, revision: string | undefined;
     while (true) {
-      const result = await bus.observations(after, revision);
+      let result: unknown;
+      try {
+        result = await bus.observations(paging.limit, after, revision);
+        paging.negotiating = false;
+      } catch (error) {
+        if (paging.negotiating && error instanceof BridgeError && error.status === 400 && paging.limit > 100) {
+          paging.limit = paging.limit === 4000 ? 1000 : 100;
+          continue;
+        }
+        paging.negotiating = false;
+        throw error;
+      }
       if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid observations");
       const page = result as Record<string, unknown>;
       if (!Array.isArray(page.agents)) throw new Error("Invalid observations");
@@ -439,7 +453,7 @@ export class NativeMesh {
       if (budget.records > MAX_SCAN_RECORDS) throw new Error("Discovery record budget exceeded");
       const legacy = page.version === undefined;
       if (legacy && (after !== undefined || "nextCursor" in page || "revision" in page)) throw new Error("Invalid observations");
-      if (!legacy && (page.version !== 2 || page.agents.length > MAX_PAGE || typeof page.revision !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(page.revision) ||
+      if (!legacy && (page.version !== 2 || page.agents.length > paging.limit || typeof page.revision !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(page.revision) ||
           (revision !== undefined && page.revision !== revision) || !(page.nextCursor === null || qid(page.nextCursor)))) throw new Error("Invalid observations");
       let last = after;
       for (const item of page.agents) {

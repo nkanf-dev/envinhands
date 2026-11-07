@@ -234,7 +234,7 @@ export function createNativeMeshApi(options: {dbPath: string; token: string}) {
       const next = Buffer.byteLength(snapshot.rows[index]!) + (index > start ? 1 : 0);
       const candidateCursor = index + 1 < snapshot.rows.length ? snapshot.ids[index]! : null;
       const envelopeBytes = Buffer.byteLength(JSON.stringify({version: 2, agents: [], nextCursor: candidateCursor, revision}));
-      if (envelopeBytes + recordsBytes + next > MAX_BYTES) {
+      if (envelopeBytes + recordsBytes + next >= MAX_BYTES) {
         if (index === start) throw new HttpError(413, "Observation too large");
         break;
       }
@@ -294,7 +294,7 @@ export function createNativeMeshApi(options: {dbPath: string; token: string}) {
           if (!legacy && ([...params.keys()].some(k => !["limit", "after", "revision"].includes(k)) ||
               ["limit", "after", "revision"].some(k => params.getAll(k).length > 1))) throw new HttpError(400, "Invalid pagination");
           const rawLimit = params.get("limit"), after = params.get("after"), expected = params.get("revision");
-          if (!legacy && (rawLimit === null || !/^(?:[1-9][0-9]{0,2}|1000)$/.test(rawLimit) ||
+          if (!legacy && (rawLimit === null || !/^(?:[1-9][0-9]{0,2}|1000|4000)$/.test(rawLimit) ||
               (after === null) !== (expected === null) || (after !== null && !qid(after)) ||
               (expected !== null && !/^(0|[1-9][0-9]{0,18})$/.test(expected)))) throw new HttpError(400, "Invalid pagination");
           const limit = legacy ? MAX_PAGE : Number(rawLimit);

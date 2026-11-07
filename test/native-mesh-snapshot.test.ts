@@ -503,3 +503,53 @@ test("legacy bus heartbeat and message semantics remain independent of mesh snap
     expect((await (await call("/v1/messages?to=y")).json() as {messages:unknown[]}).messages).toHaveLength(0);
   } finally { api.close(); bus.close(); f.cleanup(); }
 });
+
+
+test("cursor bitmaps count against snapshot capacity before issuance and expire with their snapshot", async () => {
+  const f=fixture(), api=createNativeMeshApi({dbPath:f.path,token}), db=new Database(f.path);
+  try {
+    const clock=jest.spyOn(performance,"now"); clock.mockReturnValue(0);
+    const insert=db.query("INSERT INTO native_mesh_agents_v1 VALUES (?,?,?,?,?,?,?)");
+    const add=(i:number)=>{const id=String(i).padStart(5,"0"); insert.run(qualifiedAgentId("h",id),"h",id,null,"n".repeat(128),"active","2025-01-01T00:00:00.000Z");};
+    // Each encoded row accounts for 944 bytes. At 8884 rows there is room
+    // for one bitmap (1111 bytes plus 256 allowance), but not a second.
+    db.transaction(()=>{for(let i=0;i<8884;i++) add(i);})();
+    const firstPage=await first(api,1);
+    expect((await get(api,"?limit=2")).status).toBe(503);
+    expect((await get(api,continuation(firstPage,2))).status).toBe(400);
+    expect((await get(api,continuation(firstPage,1))).status).toBe(200);
+    expect((await first(api,1)).revision).toBe(firstPage.revision);
+    clock.mockReturnValue(30_001);
+    expect((await get(api,continuation(firstPage,1))).status).toBe(409);
+    expect((await first(api,1)).revision).not.toBe(firstPage.revision);
+    // The extra row leaves enough room for the rows but not even one bitmap.
+    add(8884);
+    expect((await get(api,"?limit=1")).status).toBe(503);
+    expect((await get(api,"?limit=1")).status).toBe(503);
+  } finally { jest.restoreAllMocks(); db.close(); api.close(); f.cleanup(); }
+});
+
+
+test("global bitmap budget includes cached allocations and is released on expiry", async () => {
+  const f=fixture(), api=createNativeMeshApi({dbPath:f.path,token}), db=new Database(f.path);
+  try {
+    const clock=jest.spyOn(performance,"now"); clock.mockReturnValue(0);
+    const insert=db.query("INSERT INTO native_mesh_agents_v1 VALUES (?,?,?,?,?,?,?)");
+    db.transaction(()=>{for(let i=0;i<8615;i++) {
+      const id=String(i).padStart(5,"0");
+      insert.run(qualifiedAgentId("h",id),"h",id,null,"n".repeat(128),"active","2025-01-01T00:00:00.000Z");
+    }})();
+    // limit=100 creates independent paginated snapshots. Each uses 8,133,893
+    // accounting bytes; 33 leave room for only 12 additional bitmaps.
+    const firstPage=await first(api,100);
+    for(let i=1;i<33;i++) await first(api,100);
+    for(let limit=1;limit<=12;limit++) expect((await get(api,`?limit=${limit}`)).status).toBe(200);
+    expect((await get(api,"?limit=13")).status).toBe(503);
+    expect((await get(api,"?limit=13")).status).toBe(503);
+    expect((await get(api,continuation(firstPage,100))).status).toBe(200);
+    expect((await get(api,"?limit=100")).status).toBe(503);
+    clock.mockReturnValue(30_001);
+    expect((await get(api,continuation(firstPage,100))).status).toBe(409);
+    expect((await get(api,"?limit=100")).status).toBe(200);
+  } finally { jest.restoreAllMocks(); db.close(); api.close(); f.cleanup(); }
+}, 30000);

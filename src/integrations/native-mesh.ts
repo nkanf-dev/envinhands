@@ -242,13 +242,28 @@ export function createNativeMeshApi(options: {dbPath: string; token: string}) {
     }
     const agents = snapshot.rows.slice(start, index).map(row => JSON.parse(row) as MeshObservation);
     const nextCursor = index < snapshot.rows.length ? agents[agents.length - 1]!.id : null;
+    // Build the response before issuing its cursor. Failure must not authorize
+    // a cursor that the caller did not receive.
+    const page = response(200, {version: 2, agents, nextCursor, revision});
     if (nextCursor !== null) {
       let issued = snapshot.cursors.get(limit);
-      if (!issued) { issued = new Uint8Array(Math.ceil(snapshot.rows.length / 8)); snapshot.cursors.set(limit, issued); }
+      if (!issued) {
+        // Account for the byte buffer and a conservative allowance for the
+        // typed array and Map entry. This is not an exact heap measurement.
+        const bytes = Math.ceil(snapshot.rows.length / 8), cost = bytes + 256;
+        const retained = snapshots.get(revision) === snapshot;
+        if (snapshot.memory + cost > MAX_SNAPSHOT_MEMORY ||
+            retainedMemory + (retained ? cost : snapshot.memory + cost) > MAX_TOTAL_MEMORY)
+          throw new HttpError(503, "Discovery snapshot capacity exhausted");
+        issued = new Uint8Array(bytes);
+        snapshot.cursors.set(limit, issued);
+        snapshot.memory += cost;
+        if (retained) retainedMemory += cost;
+      }
       const bit = index - 1;
       issued[bit >> 3] = issued[bit >> 3]! | (1 << (bit & 7));
     }
-    return response(200, {version: 2, agents, nextCursor, revision});
+    return page;
   }
   return {
     async tryAuditedHeartbeat(req: Request, actor: string): Promise<Response | null> {

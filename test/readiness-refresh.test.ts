@@ -167,6 +167,7 @@ test("stop cancels scheduled work, waits for an in-flight check, and prevents qu
     const stopping = service.stop().then(() => { stopped = true; });
     await Promise.resolve();
     expect(stopped).toBe(false);
+    expect([...timers.jobs.values()].some(job => job.delay === 55_000)).toBe(true);
     expect(timers.jobs.has(scheduled)).toBe(false);
     result.resolve(ready);
     await Promise.all([cycle, stopping]);
@@ -217,7 +218,7 @@ test("check timeout aborts its verifier and records not-ready without leaking er
     add(storage, "timeout"); storage.recordVerification("timeout", true);
     const timers = new FakeTimers();
     const entered = deferred<void>();
-    const events: Array<{ type: string; machineId?: string }> = [];
+    const events: Array<{ type: string; machineId?: string; timeoutStage?: string }> = [];
     let signalSeen: AbortSignal | undefined;
     const service = createReadinessRefresh({ storage, timers, checkTimeoutMs: 50,
       onEvent: event => { events.push(event); }, verifier: async (_target, signal) => {
@@ -234,7 +235,7 @@ test("check timeout aborts its verifier and records not-ready without leaking er
     await cycle;
     expect(signalSeen?.aborted).toBe(true);
     expect(storage.getMachine("timeout")!.status).toBe("not-ready");
-    expect(events).toContainEqual({ type: "check-timeout", machineId: "timeout" });
+    expect(events).toContainEqual({ type: "check-timeout", machineId: "timeout", timeoutStage: "refresh" });
     expect(JSON.stringify(events)).not.toContain("secret-timeout-error");
     await service.stop();
   } finally { storage.close(); }
@@ -439,4 +440,50 @@ test("a result that ages out during SQLite commit retries cannot renew readiness
     expect(events).toContain("check-timeout");
     await service.stop();
   } finally { if (locked) locker.exec("ROLLBACK"); locker.close(); storage.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test("default deadline permits a 25.84 second result and reports its SSH duration", async () => {
+  const storage = Storage.open(":memory:");
+  try {
+    add(storage, "slow");
+    const timers = new FakeTimers(); let now = 0;
+    const entered = deferred<void>(); const result = deferred<ReadinessResult>();
+    const events: unknown[] = [];
+    const service = createReadinessRefresh({ storage, timers, clock: { now: () => now, monotonic: () => now },
+      onEvent: event => events.push(event), verifier: async () => { entered.resolve(); return result.promise; } });
+    const cycle = service.refresh(); await entered.promise;
+    expect([...timers.jobs.values()][0].delay).toBe(50_000);
+    now = 25_840; result.resolve({ ...ready, sshDurationMs: 25_840 }); await cycle;
+    expect(storage.getMachine("slow")!.status).toBe("ready");
+    expect(events).toContainEqual({ type: "check-ready", machineId: "slow", sshDurationMs: 25_840 });
+    await service.stop();
+  } finally { storage.close(); }
+});
+
+test("stop during check-start cannot start a verifier or renew readiness", async () => {
+  const storage = Storage.open(":memory:");
+  try {
+    add(storage, "reentrant"); storage.recordVerification("reentrant", true);
+    let called = false; let stopping: Promise<void> | undefined;
+    const service = createReadinessRefresh({ storage,
+      onEvent: event => { if (event.type === "check-start") stopping = service.stop(); },
+      verifier: async () => { called = true; return ready; } });
+    await service.refresh(); await stopping;
+    expect(called).toBe(false);
+    expect(storage.getMachine("reentrant")!.status).not.toBe("ready");
+  } finally { storage.close(); }
+});
+
+test("SSH process timeout is distinct from outer refresh timeout", async () => {
+  const storage = Storage.open(":memory:");
+  try {
+    add(storage, "ssh-timeout"); const events: unknown[] = [];
+    const service = createReadinessRefresh({ storage, onEvent: event => events.push(event),
+      verifier: async () => ({ ...notReady, sshDurationMs: 45_001, timeoutStage: "ssh-process" }) });
+    await service.refresh();
+    expect(storage.getMachine("ssh-timeout")!.status).toBe("not-ready");
+    expect(events).toContainEqual({ type: "check-timeout", machineId: "ssh-timeout", sshDurationMs: 45_001, timeoutStage: "ssh-process" });
+    await service.stop();
+  } finally { storage.close(); }
 });

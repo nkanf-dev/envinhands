@@ -13,7 +13,7 @@ export interface RefreshTimers {
   clearTimeout(timer: Timer): void;
 }
 export type RefreshEvent =
-  | { type: "check-start" | "check-ready" | "check-not-ready" | "check-error" | "check-timeout"; machineId: string }
+  | { type: "check-start" | "check-ready" | "check-not-ready" | "check-error" | "check-timeout"; machineId: string; sshDurationMs?: number; timeoutStage?: "ssh-process" | "refresh" }
   | { type: "cycle-error" | "stop-timeout" | "storage-busy"; machineId?: string };
 export interface ReadinessRefreshOptions {
   storage: Storage;
@@ -45,12 +45,13 @@ function sshRunner(signal: AbortSignal): CommandRunner {
     const group = process.platform !== "win32";
     const child = spawn(command, [...args], { shell: false, stdio: "ignore", detached: group });
     let timedOut = false;
+    let killed = false;
     const kill = () => {
-      timedOut = true;
+      killed = true;
       try { if (group && child.pid) process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); }
       catch { try { child.kill("SIGKILL"); } catch { /* process already gone */ } }
     };
-    const timer = setTimeout(kill, timeoutMs);
+    const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
     signal.addEventListener("abort", kill, { once: true });
     // Close follows error and guarantees the child handle has been reaped.
     let spawnError: Error | undefined;
@@ -60,8 +61,8 @@ function sshRunner(signal: AbortSignal): CommandRunner {
       if (group && child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch { /* group already gone */ } }
       clearTimeout(timer);
       signal.removeEventListener("abort", kill);
-      if (spawnError && !timedOut) reject(spawnError);
-      else resolve({ exitCode: timedOut ? null : code });
+      if (spawnError && !killed) reject(spawnError);
+      else resolve({ exitCode: killed ? null : code, timedOut });
     });
     if (signal.aborted) kill();
   });
@@ -75,8 +76,8 @@ export function createReadinessRefresh(options: ReadinessRefreshOptions): {
   const interval = options.intervalMs ?? 120_000;
   const jitter = options.jitterRatio ?? 0.1;
   const concurrency = options.concurrency ?? 3;
-  const timeout = options.checkTimeoutMs ?? 20_000;
-  const deadline = options.stopDeadlineMs ?? 25_000;
+  const timeout = options.checkTimeoutMs ?? 50_000;
+  const deadline = options.stopDeadlineMs ?? 55_000;
   const retryMs = options.storageRetryMs ?? 500;
   const retryDelay = options.storageRetryDelayMs ?? 25;
   if (!storage || !Number.isFinite(interval) || interval < 1 || interval > 2_147_483_647 ||
@@ -134,9 +135,9 @@ export function createReadinessRefresh(options: ReadinessRefreshOptions): {
     }
     // stop may have run while the asynchronous begin retry was settling.
     if (stopping) return;
-    emit({ type: "check-start", machineId: machine.id });
     const controller = new AbortController();
     active.add(controller);
+    emit({ type: "check-start", machineId: machine.id });
     let timedOut = false;
     const wallStart = clock.now();
     const monoStart = clock.monotonic();
@@ -149,11 +150,16 @@ export function createReadinessRefresh(options: ReadinessRefreshOptions): {
     };
     let ready = false;
     let failed = false;
+    let sshDurationMs: number | undefined;
+    let sshTimedOut = false;
     try {
       // Old catalog rows have no SSH user. Never invent one or run unsupported OS.
-      if (machine.sshUser && ["linux", "macos", "windows"].includes(machine.os.toLowerCase())) {
+      if (!stopping && machine.sshUser && ["linux", "macos", "windows"].includes(machine.os.toLowerCase())) {
         const result = await verifier({ host: machine.host, user: machine.sshUser, os: machine.os,
           sshPort: machine.sshPort, ...(machine.relayNodeId == null ? {} : { relayNodeId: machine.relayNodeId }) }, controller.signal);
+        if (typeof result?.sshDurationMs === "number" && Number.isFinite(result.sshDurationMs) && result.sshDurationMs >= 0)
+          sshDurationMs = Math.round(result.sshDurationMs);
+        sshTimedOut = result?.timeoutStage === "ssh-process";
         // Timers can be delayed by sleep or an event-loop stall. Never renew
         // evidence based on a result that arrived after the check deadline.
         expireIfLate();
@@ -166,10 +172,12 @@ export function createReadinessRefresh(options: ReadinessRefreshOptions): {
       await storageOperation(() => {
         // Lock retries can themselves delay the write past the freshness bound.
         expireIfLate();
-        if (timedOut) ready = false;
+        if (timedOut || stopping) ready = false;
         return storage.recordVerification(machine.id, ready, token);
       }, false);
-      emit({ type: timedOut ? "check-timeout" : failed ? "check-error" : ready ? "check-ready" : "check-not-ready", machineId: machine.id });
+      emit({ type: timedOut || sshTimedOut ? "check-timeout" : failed ? "check-error" : ready ? "check-ready" : "check-not-ready", machineId: machine.id,
+        ...(sshDurationMs === undefined ? {} : { sshDurationMs }),
+        ...(timedOut ? { timeoutStage: "refresh" as const } : sshTimedOut ? { timeoutStage: "ssh-process" as const } : {}) });
     } catch (error) { emit(isBusy(error) ? { type: "storage-busy", machineId: machine.id } : { type: "check-error", machineId: machine.id }); }
   };
   const runCycle = (spread: boolean): Promise<void> => {

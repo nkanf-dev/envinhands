@@ -56,7 +56,7 @@ test("explicit CLI schedules default 120 second checks, uses real database, drai
     await Promise.resolve();
     expect(signal?.aborted).toBe(true);
     expect(closed).toBe(false);
-    result.resolve(ready);
+    result.resolve({ ...ready, sshDurationMs: 25_840 });
     expect(await run).toBe(0);
     expect(closed).toBe(true);
     expect(signals.listenerCount("SIGINT")).toBe(0);
@@ -64,6 +64,7 @@ test("explicit CLI schedules default 120 second checks, uses real database, drai
     expect(timers.jobs.size).toBe(0);
     expect(output).not.toContain("top-secret-token"); expect(output).not.toContain("secret-target");
     expect(output).not.toContain("private-machine"); expect(output).not.toContain("private-result");
+    expect(output).toContain("SSH 25840 ms");
     const db = Storage.open(f.dbPath);
     try { expect(db.getMachine("private-machine")?.status).toBe("not-ready"); } finally { db.close(); }
   } finally { rmSync(f.dir, { recursive: true, force: true }); }

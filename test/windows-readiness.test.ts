@@ -19,8 +19,8 @@ test("success checks a fixed effective token command over non-interactive SSH", 
   assert.match(result.message, /time of this check/);
   assert.match(result.message, /other Agent or session/);
   const { command, args, timeout } = calls[0];
-  assert.equal(command, "ssh"); assert.equal(timeout, 15_000);
-  assert.deepEqual(args.slice(0, -1), ["-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-p", "22", "-l", "alice", "--", "host.example.org", "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+  assert.equal(command, "ssh"); assert.equal(timeout, 45_000);
+  assert.deepEqual(args.slice(0, -1), ["-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=20", "-p", "22", "-l", "alice", "--", "host.example.org", "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
   const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
   assert.match(script, /WindowsIdentity\]::GetCurrent\(\)/);
   assert.match(script, /WindowsPrincipal/);
@@ -75,7 +75,8 @@ test("the main readiness gate delegates Windows checks and preserves failure res
     };
     const expected = await checkWindowsAdminReadiness(target, runner);
     const actual = await checkAdminReadiness({ ...target, os: "wInDoWs" }, runner);
-    assert.deepEqual(actual, expected);
+    assert.equal(actual.status, expected.status);
+    assert.equal(actual.ready, expected.ready);
     assert.equal(calls.length, 2);
     assert.deepEqual(calls[1], calls[0]);
     assert.equal(actual.ready, exitCode === 0);
@@ -114,7 +115,7 @@ test("Windows relay uses the shared POSIX proxy and the same fixed token check",
     assert.equal(calls.length, 3);
     assert.deepEqual(calls[2], calls[1]);
     assert.equal(calls[1].command, "ssh");
-    assert.equal(calls[1].timeout, 15_000);
+    assert.equal(calls[1].timeout, 45_000);
     const args = [...calls[1].args];
     const proxyIndex = args.findIndex(a => a.startsWith("ProxyCommand="));
     assert.ok(proxyIndex > 0);
@@ -193,4 +194,13 @@ test("Windows names are passed as one -l argument and unsafe names never execute
   for (const user of ["-bad", "Jane ", "Jane.", "Jane\n", "Jane\tDoe", "Jane;id", "a".repeat(65)])
     assert.equal((await checkWindowsAdminReadiness({...target, user}, runner)).ready, false);
   assert.equal(calls.length, 2);
+});
+
+
+test("SSH process timeout is visible and never accepted as ready", async () => {
+  const result = await checkAdminReadiness(target, async () => ({ exitCode: 0, timedOut: true }));
+  assert.equal(result.ready, false);
+  assert.equal(result.timeoutStage, "ssh-process");
+  assert.equal(typeof result.sshDurationMs, "number");
+  assert.match(result.message, /stage is unknown/);
 });

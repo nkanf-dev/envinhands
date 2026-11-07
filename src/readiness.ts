@@ -20,13 +20,14 @@ export interface ReadinessTarget {
 }
 
 export type ReadinessResult =
-  | { status: "ready"; ready: true; message: string }
-  | { status: "not-ready" | "unsupported"; ready: false; message: string };
+  | { status: "ready"; ready: true; message: string; sshDurationMs?: number; timeoutStage?: "ssh-process" }
+  | { status: "not-ready" | "unsupported"; ready: false; message: string; sshDurationMs?: number; timeoutStage?: "ssh-process" };
 
 /** A runner must execute argv directly, never through a local shell. */
-export type CommandRunner = (command: string, args: readonly string[], timeoutMs: number) => Promise<{ exitCode: number | null }>;
+export type CommandRunner = (command: string, args: readonly string[], timeoutMs: number) => Promise<{ exitCode: number | null; timedOut?: boolean }>;
 
-const TIMEOUT_MS = 15_000;
+export const SSH_TIMEOUT_MS = 45_000;
+export const SSH_CONNECT_TIMEOUT_OPTION = "ConnectTimeout=20";
 const NOT_READY: ReadinessResult = { status: "not-ready", ready: false,
   message: "SSH or non-interactive sudo verification failed; check connectivity, trusted host key, authentication and sudo configuration." };
 
@@ -38,7 +39,7 @@ export const runCommand: CommandRunner = (command, args, timeoutMs) => new Promi
     if (settled) return;
     settled = true;
     try { child.kill("SIGKILL"); } catch { /* still fail closed */ }
-    resolve({ exitCode: null });
+    resolve({ exitCode: null, timedOut: true });
   }, timeoutMs);
   child.once("error", (error) => {
     if (settled) return;
@@ -106,12 +107,19 @@ export async function checkAdminReadiness(target: ReadinessTarget, runner: Comma
     proxyOptions.push("-o", proxy);
   }
   const args = ["-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-    "-o", "ConnectTimeout=10", ...proxyOptions, "-p", String(port), "-l", target.user, "--", target.host,
+    "-o", SSH_CONNECT_TIMEOUT_OPTION, ...proxyOptions, "-p", String(port), "-l", target.user, "--", target.host,
     "sudo", "-n", "true"];
+  const start = performance.now();
   try {
-    const result = await runner("ssh", args, TIMEOUT_MS);
-    if (result && result.exitCode === 0) return { status: "ready", ready: true,
-      message: "SSH and non-interactive sudo succeeded at the time of this check." };
-  } catch { /* Spawn, transport, or runner failures must not imply readiness. */ }
-  return NOT_READY;
+    const result = await runner("ssh", args, SSH_TIMEOUT_MS);
+    const sshDurationMs = Math.round(performance.now() - start);
+    if (result && result.exitCode === 0 && !result.timedOut) return { status: "ready", ready: true, sshDurationMs,
+      message: `SSH and non-interactive sudo succeeded at the time of this check (SSH ${sshDurationMs} ms).` };
+    if (result?.timedOut) return { ...NOT_READY, sshDurationMs, timeoutStage: "ssh-process",
+      message: `SSH process timed out after ${sshDurationMs} ms; connection versus remote command stage is unknown.` };
+    return { ...NOT_READY, sshDurationMs, message: `${NOT_READY.message} SSH duration: ${sshDurationMs} ms.` };
+  } catch { /* Spawn, transport, or runner failures must not imply readiness. */
+    const sshDurationMs = Math.round(performance.now() - start);
+    return { ...NOT_READY, sshDurationMs, message: `${NOT_READY.message} SSH duration: ${sshDurationMs} ms.` };
+  }
 }

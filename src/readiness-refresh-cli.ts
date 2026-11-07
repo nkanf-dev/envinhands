@@ -36,6 +36,9 @@ export async function runReadinessRefreshCli(args: string[], io: RefreshCliIO = 
       service = createReadinessRefresh({ ...dependencies.refreshOptions, storage,
         onEvent: event => {
           // Machine IDs may themselves reveal targets. Never print them or errors.
+          if ((event.type === "check-ready" || event.type === "check-not-ready" || event.type === "check-error" || event.type === "check-timeout") && (event.sshDurationMs !== undefined || event.timeoutStage !== undefined)) {
+            io.write(`Readiness refresh: ${event.type}${event.sshDurationMs === undefined ? "" : `; SSH ${event.sshDurationMs} ms`}${event.timeoutStage === undefined ? "" : `; timeout stage ${event.timeoutStage}`} (target omitted).\n`);
+          }
           if (event.type === "cycle-error" || event.type === "stop-timeout") {
             io.error(`Readiness refresh: ${event.type}.\n`);
           }

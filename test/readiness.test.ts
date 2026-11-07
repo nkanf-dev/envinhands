@@ -17,8 +17,8 @@ test("Linux and macOS use fixed, non-interactive SSH and sudo arguments", async 
   assert.equal((await checkAdminReadiness({ ...target, os: "macOS", host: "::1", sshPort: 2222 }, runner)).ready, true);
   assert.equal(calls.length, 2);
   assert.equal(calls[0].command, "ssh");
-  assert.deepEqual(calls[0].args, ["-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-p", "22", "-l", "alice", "--", "nas.example.org", "sudo", "-n", "true"]);
-  assert.equal(calls[0].timeout, 15000);
+  assert.deepEqual(calls[0].args, ["-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=20", "-p", "22", "-l", "alice", "--", "nas.example.org", "sudo", "-n", "true"]);
+  assert.equal(calls[0].timeout, 45000);
   assert.equal(calls[1].args[calls[1].args.indexOf("-p") + 1], "2222");
   assert.equal(calls[1].args[calls[1].args.indexOf("--") + 1], "::1");
   for (const call of calls) assert.ok(!call.args.some((a) => /StrictHostKeyChecking=(no|off|accept-new)/i.test(a)));
@@ -85,7 +85,7 @@ test("relay ProxyCommand quotes its absolute binary path and never contains cred
     const option = args.find(a => a.startsWith("ProxyCommand="));
     assert.ok(option);
     assert.ok(args.includes("StrictHostKeyChecking=yes"));
-    assert.ok(args.includes("ConnectTimeout=10"));
+    assert.ok(args.includes("ConnectTimeout=20"));
     assert.deepEqual(args.slice(-3), ["sudo", "-n", "true"]);
     assert.ok(!args.join(" ").includes(process.env.ENVINHANDS_RELAY_SECRET));
     assert.ok(!args.join(" ").includes(process.env.ENVINHANDS_RELAY_URL));
@@ -135,4 +135,13 @@ test("relay configuration and node IDs fail closed before invoking SSH", async (
     keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+
+test("SSH process timeout is visible and never accepted as ready", async () => {
+  const result = await checkAdminReadiness(target, async () => ({ exitCode: 0, timedOut: true }));
+  assert.equal(result.ready, false);
+  assert.equal(result.timeoutStage, "ssh-process");
+  assert.equal(typeof result.sshDurationMs, "number");
+  assert.match(result.message, /stage is unknown/);
 });

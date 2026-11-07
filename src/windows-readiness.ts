@@ -4,10 +4,9 @@
  * any other Agent/session. Callers must first trust the host key.
  */
 import { isIP } from "node:net";
-import { relayProxy, runCommand } from "./readiness.ts";
+import { relayProxy, runCommand, SSH_TIMEOUT_MS, SSH_CONNECT_TIMEOUT_OPTION } from "./readiness.ts";
 import type { CommandRunner, ReadinessResult, ReadinessTarget } from "./readiness.ts";
 
-const TIMEOUT_MS = 15_000;
 const NOT_READY: ReadinessResult = { status: "not-ready", ready: false,
   message: "Windows SSH administrator token verification failed; check connectivity, trusted host key, authentication and the effective session token." };
 
@@ -47,12 +46,19 @@ export async function checkWindowsAdminReadiness(target: ReadinessTarget, runner
     proxyOptions.push("-o", proxy);
   }
   const args = ["-T", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-    "-o", "ConnectTimeout=10", ...proxyOptions, "-p", String(port), "-l", target.user, "--", target.host,
+    "-o", SSH_CONNECT_TIMEOUT_OPTION, ...proxyOptions, "-p", String(port), "-l", target.user, "--", target.host,
     "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", ENCODED_WINDOWS_ADMIN_CHECK];
+  const start = performance.now();
   try {
-    const result = await runner("ssh", args, TIMEOUT_MS);
-    if (result && result.exitCode === 0) return { status: "ready", ready: true,
-      message: "The checked SSH session had an effective Windows administrator token at the time of this check; this does not verify any other Agent or session." };
-  } catch { /* Fail closed on process, transport, and runner errors. */ }
-  return NOT_READY;
+    const result = await runner("ssh", args, SSH_TIMEOUT_MS);
+    const sshDurationMs = Math.round(performance.now() - start);
+    if (result && result.exitCode === 0 && !result.timedOut) return { status: "ready", ready: true, sshDurationMs,
+      message: `The checked SSH session had an effective Windows administrator token at the time of this check; this does not verify any other Agent or session. SSH duration: ${sshDurationMs} ms.` };
+    if (result?.timedOut) return { ...NOT_READY, sshDurationMs, timeoutStage: "ssh-process",
+      message: `Windows SSH process timed out after ${sshDurationMs} ms; connection versus remote command stage is unknown.` };
+    return { ...NOT_READY, sshDurationMs, message: `${NOT_READY.message} SSH duration: ${sshDurationMs} ms.` };
+  } catch { /* Fail closed on process, transport, and runner errors. */
+    const sshDurationMs = Math.round(performance.now() - start);
+    return { ...NOT_READY, sshDurationMs, message: `${NOT_READY.message} SSH duration: ${sshDurationMs} ms.` };
+  }
 }

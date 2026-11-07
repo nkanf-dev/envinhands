@@ -6,7 +6,8 @@ export type DebugLevel = "debug" | "info" | "warn" | "error";
 export interface DebugFields {
   machineId?: string; sessionId?: string; connectionId?: string;
   durationMs?: number; retry?: number; transport?: string; errorCategory?: string;
-  status?: string; bytesIn?: number; bytesOut?: number;
+  status?: string; bytesIn?: number; bytesOut?: number; bytesWritten?: number;
+  lastInMs?: number; lastOutMs?: number; lastWriteMs?: number; closeCode?: number; peerCode?: number;
 }
 export interface DebugLogOptions {
   /** A dedicated directory with a trusted, non-writable parent; one writer process per directory. */
@@ -37,7 +38,7 @@ const levels: Record<DebugLevel, number> = { debug: 0, info: 1, warn: 2, error: 
 const active = new Set<string>();
 const tokenPattern = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/;
 const keys = ["machineId", "sessionId", "connectionId", "transport", "errorCategory", "status"] as const;
-const numbers = ["durationMs", "retry", "bytesIn", "bytesOut"] as const;
+const numbers = ["durationMs", "retry", "bytesIn", "bytesOut", "bytesWritten", "lastInMs", "lastOutMs", "lastWriteMs", "closeCode", "peerCode"] as const;
 type Failure = "configuration" | "unsafe_path" | "io";
 class UnsafePath extends Error {}
 

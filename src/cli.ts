@@ -517,7 +517,8 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
       const secret = required(env, "ENVINHANDS_RELAY_SECRET");
       if (new URL(url).protocol === "ws:") error("Warning: ws:// is plaintext; use only on a trusted network. Use wss:// with TLS on public networks.");
       if (command === "proxy") {
-        await deps.startProxy({ relayUrl: url, nodeId: id!, secret });
+        if (env.ENVINHANDS_RELAY_DIAGNOSTICS === "1") setupLogger("proxy", [secret, env.ENVINHANDS_TOKEN ?? ""]);
+        await deps.startProxy({ relayUrl: url, nodeId: id!, secret, onEvent, diagnostics: env.ENVINHANDS_RELAY_DIAGNOSTICS === "1" });
         return 0;
       }
       const sshPort = port(env, "ENVINHANDS_SSH_PORT", "22");
@@ -550,7 +551,7 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
         else if (event === "node_disconnected") advertiser?.setRelayConnected(false);
       };
       let runtime: ReturnType<typeof startNodeRuntime>;
-      try { runtime = deps.startNode({ relayUrl: url, nodeId: id!, secret, sshPort, onEvent:nodeEvent }); }
+      try { runtime = deps.startNode({ relayUrl: url, nodeId: id!, secret, sshPort, onEvent:nodeEvent, diagnostics: env.ENVINHANDS_RELAY_DIAGNOSTICS === "1" }); }
       catch (err) { advertiser?.stop(); throw err; }
       // Onboarding is independent of relay registration and never gates it.
       let onboarding: ReturnType<typeof createTeamNodeOnboard> | undefined;
@@ -606,7 +607,7 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
     }
     const relaySecret = required(env, "ENVINHANDS_RELAY_SECRET");
     setupLogger("relay", [relaySecret]);
-    const instance = deps.startRelay({ secret: relaySecret, onEvent, hostname: hostname(env, "ENVINHANDS_RELAY_HOST"), port: port(env, "ENVINHANDS_RELAY_PORT", "8788", true) });
+    const instance = deps.startRelay({ secret: relaySecret, onEvent, diagnostics: env.ENVINHANDS_RELAY_DIAGNOSTICS === "1", hostname: hostname(env, "ENVINHANDS_RELAY_HOST"), port: port(env, "ENVINHANDS_RELAY_PORT", "8788", true) });
     error("Relay started. Plain ws:// is for trusted networks only; use wss:// with TLS on public networks. Shared-secret access is not per-node authorization.");
     return await untilSignal(deps.signals, () => instance.stop());
   } catch (err) {

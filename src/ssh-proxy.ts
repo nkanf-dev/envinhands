@@ -13,6 +13,7 @@ import { READY, FIN, FIN_ACK, relayControl, relayEndpoint } from "./relay-protoc
  * the protocol frame limit. Application-owned queued output is bounded.
  */
 import type { Readable, Writable } from "node:stream";
+import type { DebugFields } from "./debug-log.ts";
 
 const ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 const FRAME = 64 * 1024;
@@ -28,6 +29,10 @@ export interface SshProxyOptions {
   input?: Readable;
   output?: Writable;
   setupTimeoutMs?: number;
+  /** Enable periodic transfer progress events. */
+  diagnostics?: boolean;
+  /** Metadata only. Callback exceptions are ignored. bytesIn is input to relay; bytesOut is relay to output. */
+  onEvent?: (event: string, fields: DebugFields) => void;
   /** Called once after remote FIN and accepted output drains. Caller owns output EOF. */
   onRemoteEnd?: () => void;
 }
@@ -64,13 +69,36 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
     let remoteClosed = false, sentFin = false, remoteFin = false, sentAck = false, receivedAck = false;
     let drainTimer: ReturnType<typeof setTimeout> | undefined;
     let poll: ReturnType<typeof setInterval> | undefined;
+    let diagnosticTimer: ReturnType<typeof setInterval> | undefined;
     let setupTimer: ReturnType<typeof setTimeout> | undefined;
     let closeError: Error | undefined;
+    // Timings use a monotonic clock. Counters mean sent to WebSocket and
+    // received from relay, not bytes consumed by either application.
+    const started = performance.now();
+    const connectionId = crypto.randomUUID();
+    let bytesIn = 0, bytesOut = 0, lastInMs: number | undefined, lastOutMs: number | undefined;
+    let firstIn = false, firstOut = false;
+    let closeCode: number | undefined;
+    const emit = (event: string, extra: DebugFields = {}) => {
+      try { options.onEvent?.(event, { machineId: options.nodeId, connectionId, bytesIn, bytesOut, lastInMs, lastOutMs, closeCode, durationMs: Math.max(0, Math.floor(performance.now() - started)), ...extra }); } catch {}
+    };
+    const progress = (direction: "in" | "out", bytes: number) => {
+      if (!bytes) return;
+      if (direction === "in") bytesIn += bytes; else bytesOut += bytes;
+      const now = performance.now();
+      if (direction === "in") lastInMs = Math.max(0, Math.floor(now - started));
+      else lastOutMs = Math.max(0, Math.floor(now - started));
+      if (direction === "in" ? !firstIn : !firstOut) {
+        if (direction === "in") firstIn = true; else firstOut = true;
+        emit(direction === "in" ? "proxy_first_in" : "proxy_first_out");
+      }
+    };
 
     const clearTimers = () => {
       if (setupTimer) clearTimeout(setupTimer);
       if (drainTimer) clearTimeout(drainTimer);
       if (poll) clearInterval(poll);
+      if (diagnosticTimer) clearInterval(diagnosticTimer);
     };
     const cleanup = () => {
       input.pause();
@@ -83,6 +111,11 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
     const finish = (err?: Error) => {
       if (finished) return;
       finished = true; clearTimers();
+      const category = !err ? undefined : /timed out/.test(err.message) ? "timeout" :
+        /buffer limit|frame limit/.test(err.message) ? "buffer" :
+        /Unexpected|Invalid relay ready|directional completion/.test(err.message) ? "protocol" :
+        /stream|Output EOF|Input must/.test(err.message) ? "io" : "connection";
+      emit("proxy_closed", { status: closeCode === undefined ? (err ? "local_error" : "local_close") : `close_${closeCode}`, ...(category ? {errorCategory: category} : {}) });
       queue = []; queued = 0;
       try { if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(err ? 4000 : 1000, err ? "Bridge failed" : ""); } catch {}
       // write callbacks can precede their stream's error event in the same turn.
@@ -99,6 +132,7 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
           const first = queue[0];
           const part = first.subarray(0, FRAME);
           ws.send(part);
+          progress("in", part.byteLength);
           queued -= part.byteLength;
           if (part.byteLength === first.byteLength) queue.shift();
           else queue[0] = first.subarray(part.byteLength);
@@ -146,6 +180,8 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
       if (!ready) {
         if (event.data !== READY) { fail("Invalid relay ready message"); return; }
         ready = true;
+        emit("proxy_ready");
+        if (options.diagnostics && options.onEvent) diagnosticTimer = setInterval(() => emit("proxy_progress"), 5_000);
         if (setupTimer) clearTimeout(setupTimer);
         if (input.readableEnded) onEnd();
         pump(); return;
@@ -164,6 +200,7 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
       const bytes = new Uint8Array(event.data);
       if (bytes.byteLength > 1024 * 1024) { fail("Relay frame limit exceeded"); return; }
       if (pendingOutput + bytes.byteLength > MAX_PENDING) { fail("Output buffer limit exceeded"); return; }
+      progress("out", bytes.byteLength);
       pendingOutput += bytes.byteLength;
       try {
         output.write(bytes, (err?: Error | null) => {
@@ -178,6 +215,7 @@ export function startSshProxy(options: SshProxyOptions): Promise<void> {
     ws.onerror = () => fail("Relay connection failed");
     ws.onclose = (event) => {
       if (finished) return;
+      closeCode = event.code;
       remoteClosed = true; closing = true; input.pause();
       if (!ready || (event.code !== 1000 && event.code !== 1005)) closeError = new Error("Relay connection closed unexpectedly");
       else if (!(sentFin && remoteFin && sentAck && receivedAck)) closeError = new Error("Relay closed before directional completion");

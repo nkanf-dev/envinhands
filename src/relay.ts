@@ -34,6 +34,32 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 const HEARTBEAT_TIMEOUT_MS = 30_000;
 const REGISTRATION_TIMEOUT_MS = 30_000;
 
+/** Metadata-only, opt-in snapshots. Counts are observations at this bridge,
+ * not proof of remote application delivery. Times are relative to its start. */
+function sessionDiagnostics(enabled: boolean | undefined, handler: DebugEventHandler | undefined, fields: DebugFields) {
+  const start = performance.now();
+  let bytesIn = 0, bytesOut = 0, bytesWritten = 0;
+  let lastInMs: number | undefined, lastOutMs: number | undefined, lastWriteMs: number | undefined;
+  const snapshot = (): DebugFields => ({ ...fields, durationMs: Math.max(0, performance.now() - start), bytesIn, bytesOut, bytesWritten,
+    ...(lastInMs === undefined ? {} : {lastInMs}), ...(lastOutMs === undefined ? {} : {lastOutMs}), ...(lastWriteMs === undefined ? {} : {lastWriteMs}) });
+  const report = (event: string, extra: DebugFields = {}) => { if (enabled) emit(handler, event, {...snapshot(), ...extra}); };
+  const timer = enabled ? setInterval(() => report("ssh_session_progress"), 5000) : undefined;
+  timer?.unref?.();
+  return {
+    report,
+    mark(direction: "in" | "out" | "write", size: number) {
+      if (!enabled || size <= 0) return;
+      const now = Math.max(0, performance.now() - start);
+      const first = direction === "in" ? bytesIn === 0 : direction === "out" ? bytesOut === 0 : bytesWritten === 0;
+      if (direction === "in") { bytesIn += size; lastInMs = now; }
+      else if (direction === "out") { bytesOut += size; lastOutMs = now; }
+      else { bytesWritten += size; lastWriteMs = now; }
+      if (first) report(direction === "in" ? "ssh_first_in" : direction === "out" ? "ssh_first_out" : "ssh_tcp_first_write");
+    },
+    stop(extra: DebugFields = {}) { if (timer) clearInterval(timer); report("ssh_session_diagnostic_end", extra); },
+  };
+}
+
 function duration(value: number | undefined, fallback: number, name: string): number {
   const result = value ?? fallback;
   if (!Number.isSafeInteger(result) || result < 1 || result > 2_147_483_647) throw new Error(`Invalid ${name}`);
@@ -86,9 +112,11 @@ type Session = {
   id: string; node: string; client: ServerSocket; channel?: ServerSocket;
   ready: boolean; timer: ReturnType<typeof setTimeout>;
   clientFin: boolean; nodeFin: boolean; clientAck: boolean; nodeAck: boolean; started: number;
+  diagnostic: ReturnType<typeof sessionDiagnostics>;
 };
 
 export interface RelayOptions {
+  diagnostics?: boolean;
   onEvent?: DebugEventHandler;
   secret: string;
   hostname?: string;
@@ -139,10 +167,11 @@ export function createRelayServer(options: RelayOptions) {
   const sockets = new Set<ServerSocket>();
   let stopping = false;
 
-  function end(id: string, code = 1011, reason = "Relay failure") {
+  function end(id: string, code = 1011, reason = "Relay failure", peerCode?: number) {
     const s = sessions.get(id);
     if (!s) return;
     sessions.delete(id);
+    s.diagnostic.stop({ closeCode: code, ...(peerCode === undefined ? {} : {peerCode}), status: code === 1000 ? "complete" : "aborted", ...(code === 1000 ? {} : {errorCategory: (reason === "FIN completion timed out" || reason === "setup timeout") ? "timeout" : reason === "Relay buffer exceeded" ? "buffer" : "connection"}) });
     emit(options.onEvent, "ssh_session_end", { machineId: s.node, sessionId: id, transport: "websocket", durationMs: Math.max(0, performance.now() - s.started), status: code === 1000 ? "complete" : "aborted", ...(code === 1000 ? {} : { errorCategory: (reason === "FIN completion timed out" || reason === "setup timeout") ? "timeout" : reason === "Relay buffer exceeded" ? "buffer" : "connection" }) });
     sessionCount--;
     clearTimeout(s.timer);
@@ -237,7 +266,8 @@ export function createRelayServer(options: RelayOptions) {
           if (!node) { ws.close(1011, "Node unavailable"); return; }
           const sessionId = crypto.randomUUID();
           const session: Session = { id: sessionId, node: id, client: ws, ready: false, clientFin: false, nodeFin: false, clientAck: false, nodeAck: false, started: performance.now(),
-            timer: setTimeout(() => end(sessionId, 1011, "setup timeout"), timeout) };
+            timer: setTimeout(() => end(sessionId, 1011, "setup timeout"), timeout),
+            diagnostic: sessionDiagnostics(options.diagnostics, options.onEvent, {machineId: id, sessionId, transport: "websocket"}) };
           sessions.set(sessionId, session);
           emit(options.onEvent, "ssh_session_open", { machineId: id, sessionId, transport: "websocket" });
           ws.data.sessionReserved = false;
@@ -248,6 +278,7 @@ export function createRelayServer(options: RelayOptions) {
           const session = sessions.get(id);
           if (!session || session.channel) { ws.close(1008, "Unknown channel"); return; }
           session.channel = ws;
+          session.diagnostic.report("ssh_channel_attached");
         }
       },
       message(ws, message) {
@@ -257,6 +288,7 @@ export function createRelayServer(options: RelayOptions) {
         if (!s || (role === "channel" ? s.channel !== ws : s.client !== ws)) { ws.close(); return; }
         if (role === "channel" && !s.ready && message === READY) {
           s.ready = true;
+          s.diagnostic.report("ssh_channel_ready");
           clearTimeout(s.timer);
           if (!sendRelayFrame(s.client, READY)) end(id);
           return;
@@ -278,6 +310,7 @@ export function createRelayServer(options: RelayOptions) {
           return;
         }
         if (role === "client" ? s.clientFin : s.nodeFin) { end(id); return; }
+        if (message.byteLength) s.diagnostic.mark(role === "client" ? "in" : "out", message.byteLength);
         if (message.byteLength && !sendRelayFrame(peer, message)) end(id, 1011, "Relay buffer exceeded");
       },
       pong(ws, data) {
@@ -294,7 +327,8 @@ export function createRelayServer(options: RelayOptions) {
           const s = sessions.get(id);
           if (s && (role === "client" ? s.client === ws : s.channel === ws)) {
             // A peer close is never the v2 completion owner; completed sessions were already removed by end().
-            end(id, 1011, "Peer closed before directional completion");
+            s.diagnostic.report("ssh_peer_closed", {closeCode: code, status: role});
+            end(id, 1011, "Peer closed before directional completion", code);
           }
         }
       },
@@ -320,6 +354,7 @@ export function createRelayServer(options: RelayOptions) {
 }
 
 export interface NodeClientOptions {
+  diagnostics?: boolean;
   onEvent?: DebugEventHandler;
   /** Base ws:// or wss:// URL of the relay. */
   relayUrl: string;
@@ -379,6 +414,7 @@ export function startNodeClient(options: NodeClientOptions) {
     if (stopped || channels.size >= 256) return;
     emit(options.onEvent, "ssh_session_open", { ...nodeFields, sessionId: id });
     const started = performance.now();
+    const diagnostic = sessionDiagnostics(options.diagnostics, options.onEvent, {...nodeFields, sessionId: id});
     const ws = new WebSocket(relayEndpoint(base.toString(), "/channel", "id", id), { headers });
     ws.binaryType = "arraybuffer";
     let tcp: import("bun").Socket | undefined;
@@ -387,8 +423,9 @@ export function startNodeClient(options: NodeClientOptions) {
     let pending: Uint8Array[] = [], early: Uint8Array[] = [];
     let pendingBytes = 0, earlyBytes = 0;
     const boundFinish = () => { if (!drainTimer) drainTimer = setTimeout(abort, DRAIN_TIMEOUT_MS); };
-    function finish(status = "complete") {
+    function finish(status = "complete", closeCode?: number) {
       if (closed) return;
+      diagnostic.stop({status, ...(closeCode === undefined ? {} : {closeCode})});
       emit(options.onEvent, "ssh_session_end", { ...nodeFields, sessionId: id, durationMs: Math.max(0, performance.now() - started), status, ...(status === "aborted" ? { errorCategory: "connection" } : {}) });
       closed = true; channels.delete(abort);
       if (drainTimer) clearTimeout(drainTimer);
@@ -402,7 +439,7 @@ export function startNodeClient(options: NodeClientOptions) {
     }
     function send(data: string | Uint8Array): boolean {
       const bytes = typeof data === "string" ? data.length : data.byteLength;
-      if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount + bytes + 14 > MAX_BUFFER) { abort(); return false; }
+      if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount + bytes + 14 > MAX_BUFFER) { diagnostic.report("ssh_channel_send_error", {errorCategory: ws.readyState === WebSocket.OPEN ? "buffer" : "connection"}); abort(); return false; }
       try { ws.send(data); return true; } catch { abort(); return false; }
     }
     function sendTcpData(data: Uint8Array) {
@@ -420,8 +457,9 @@ export function startNodeClient(options: NodeClientOptions) {
       try {
         while (pending.length) {
           const first = pending[0]!, count = tcp.write(first);
-          if (count < 0) { abort(); return; }
+          if (count < 0) { diagnostic.report("ssh_tcp_write_error"); abort(); return; }
           if (count === 0) return;
+          diagnostic.mark("write", count);
           pendingBytes -= count;
           if (count < first.byteLength) { pending[0] = first.subarray(count); return; }
           pending.shift();
@@ -436,10 +474,12 @@ export function startNodeClient(options: NodeClientOptions) {
     channels.add(abort);
     let earlyEnd = false;
     ws.onopen = () => {
+      diagnostic.report("ssh_channel_attached");
       void Bun.connect({ hostname: options.sshHost ?? "127.0.0.1", port, allowHalfOpen: true,
         socket: {
           data(_socket, data) {
             if (closed) return;
+            diagnostic.mark("out", data.byteLength);
             if (!tcpReady) {
               if (earlyBytes + data.byteLength > MAX_BUFFER) { abort(); return; }
               early.push(new Uint8Array(data)); earlyBytes += data.byteLength;
@@ -448,6 +488,7 @@ export function startNodeClient(options: NodeClientOptions) {
           end() { if (!tcpReady) earlyEnd = true; else sendLocalFin(); },
           drain() { flush(); },
           close(_socket, error) {
+            if (!closed) diagnostic.report("ssh_tcp_closed", {status: error ? "error" : "closed"});
             if (error) { abort(); return; }
             tcpClosed = true;
             if (closed) return;
@@ -455,12 +496,14 @@ export function startNodeClient(options: NodeClientOptions) {
             if (remoteFinAck) sendLocalFin();
             else abort();
           },
-          error() { abort(); }, connectError() { abort(); },
+          error() { diagnostic.report("ssh_tcp_error"); abort(); }, connectError() { diagnostic.report("ssh_tcp_connect_error"); abort(); },
         },
       }).then(socket => {
         if (closed) { socket.terminate(); return; }
         tcp = socket;
+        diagnostic.report("ssh_tcp_connected");
         if (!send(READY)) return;
+        diagnostic.report("ssh_channel_ready");
         tcpReady = true;
         for (const bytes of early) { sendTcpData(bytes); if (closed) return; }
         early = []; earlyBytes = 0;
@@ -478,14 +521,16 @@ export function startNodeClient(options: NodeClientOptions) {
       }
       if (!(event.data instanceof ArrayBuffer) || remoteFin || tcpClosed) { abort(); return; }
       const bytes = new Uint8Array(event.data);
-      if (pendingBytes + bytes.byteLength > MAX_BUFFER) { abort(); return; }
+      diagnostic.mark("in", bytes.byteLength);
+      if (pendingBytes + bytes.byteLength > MAX_BUFFER) { diagnostic.report("ssh_tcp_pending_limit", {errorCategory: "buffer"}); abort(); return; }
       if (bytes.byteLength) { pending.push(bytes); pendingBytes += bytes.byteLength; flush(); }
     };
-    ws.onerror = abort;
+    ws.onerror = () => { diagnostic.report("ssh_channel_error"); abort(); };
     ws.onclose = event => {
       if (closed) return;
+      diagnostic.report("ssh_channel_closed", {closeCode: event.code});
       if ((event.code === 1000 || event.code === 1005) && localFin && remoteFin && localFinAck && remoteFinAck && pendingBytes === 0) {
-        finish(); if (!tcpClosed) { try { tcp?.end(); } catch {} }
+        finish("complete", event.code); if (!tcpClosed) { try { tcp?.end(); } catch {} }
       } else abort();
     };
   }

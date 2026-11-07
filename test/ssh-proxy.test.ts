@@ -63,7 +63,9 @@ describe("SSH stdio proxy integration", () => {
     const base = startRelay();
     await startNode(base, tcp.port);
     const io = streams();
-    const proxy = startSshProxy({ relayUrl: base, nodeId: "local", secret, input: io.input, output: io.output });
+    const events: Array<{ event: string; fields: import("../src/debug-log").DebugFields }> = [];
+    const proxy = startSshProxy({ relayUrl: base, nodeId: "local", secret, input: io.input, output: io.output,
+      onEvent(event, fields) { events.push({event, fields}); if (event === "proxy_first_out") throw new Error("ignored"); } });
     // Observe rejection even if an assertion fails before the proxy ends.
     const result = proxy.then(() => ({ error: undefined }), (error: unknown) => ({ error }));
     expect(await io.received(banner.length)).toEqual(banner);
@@ -72,6 +74,18 @@ describe("SSH stdio proxy integration", () => {
     expect(await io.received(banner.length + payload.length)).toEqual(Buffer.concat([banner, payload]));
     io.input.end();
     expect((await withTimeout(result, "EOF")).error).toBeUndefined();
+    expect(events.map(e => e.event)).toContain("proxy_ready");
+    expect(events.map(e => e.event)).toContain("proxy_first_in");
+    expect(events.map(e => e.event)).toContain("proxy_first_out");
+    const closed = events.find(e => e.event === "proxy_closed")!;
+    expect(closed.fields.bytesIn).toBe(payload.length);
+    expect(closed.fields.bytesOut).toBe(banner.length + payload.length);
+    expect(typeof closed.fields.lastInMs).toBe("number");
+    expect(typeof closed.fields.lastOutMs).toBe("number");
+    expect(typeof closed.fields.closeCode).toBe("number");
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(JSON.stringify(events)).not.toContain(payload.toString("base64"));
+    expect(events.some(e => e.event === "proxy_progress")).toBe(false);
   });
 
   test("drains 1 MiB to a slow TCP receiver before input EOF", async () => {

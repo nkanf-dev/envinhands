@@ -248,13 +248,18 @@ describe("reverse relay prototype", () => {
 
   test("forwards a server-first banner after the ready marker", async () => {
     const banner = new TextEncoder().encode("SSH-2.0-test-server\r\n");
+    const payload = new TextEncoder().encode("fixture-private-payload");
+    const relayEvents: Array<{event: string; fields: import("../src/debug-log.ts").DebugFields}> = [];
+    const nodeEvents: typeof relayEvents = [];
+    let received = 0;
     const tcp = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {
       open(socket) { socket.write(banner); },
-      data() {}, error() {},
+      data(_socket, bytes) { received += bytes.byteLength; }, error() {},
     } });
     cleanup.push(() => tcp.stop(true));
-    const { base } = startRelay();
-    const node = startNodeClient({ relayUrl: base, nodeId: "banner", secret, sshPort: tcp.port });
+    const { base } = startRelay(1000, {diagnostics: true, onEvent(event, fields) {relayEvents.push({event, fields});}});
+    const node = startNodeClient({ relayUrl: base, nodeId: "banner", secret, sshPort: tcp.port,
+      diagnostics: true, onEvent(event, fields) {nodeEvents.push({event, fields});} });
     cleanup.push(() => node.close());
     await node.ready;
     const ws = connect(base, "/client?node=banner");
@@ -268,6 +273,20 @@ describe("reverse relay prototype", () => {
     });
     expect(messages[0]).toBe("ready-v2");
     expect(new Uint8Array(messages[1] as ArrayBuffer)).toEqual(banner);
+    ws.send(payload);
+    await waitFor(async () => received === payload.length, "TCP fixture received payload");
+    expect(relayEvents.some(e => e.event === "ssh_channel_ready")).toBe(true);
+    expect(relayEvents.find(e => e.event === "ssh_first_in")?.fields.bytesIn).toBe(payload.length);
+    expect(relayEvents.find(e => e.event === "ssh_first_out")?.fields.bytesOut).toBe(banner.length);
+    expect(nodeEvents.some(e => e.event === "ssh_tcp_connected")).toBe(true);
+    expect(nodeEvents.find(e => e.event === "ssh_tcp_first_write")?.fields.bytesWritten).toBe(payload.length);
+    expect(nodeEvents.find(e => e.event === "ssh_first_out")?.fields.bytesOut).toBe(banner.length);
+    ws.close(1000);
+    await waitFor(async () => relayEvents.some(e => e.event === "ssh_session_diagnostic_end"), "relay diagnostic end");
+    const end = relayEvents.find(e => e.event === "ssh_session_diagnostic_end")!;
+    expect(end.fields).toMatchObject({closeCode: 1011, peerCode: 1000, bytesIn: payload.length, bytesOut: banner.length});
+    expect(JSON.stringify([relayEvents, nodeEvents])).not.toContain(secret);
+    expect(JSON.stringify([relayEvents, nodeEvents])).not.toContain("fixture-private-payload");
   });
 
   test("requires shared secret, rejects missing node, and prevents duplicate registration", async () => {

@@ -36,7 +36,7 @@ export function reapDebugLogs(base: string, limits: { now?: number; maxAgeMs?: n
   const owner = (st: import("node:fs").Stats) => typeof process.getuid !== "function" || st.uid === process.getuid();
   try {
     for (const name of readdirSync(base)) {
-      const match = /^(server|relay|node)-([1-9][0-9]*)-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9]+)$/.exec(name);
+      const match = /^(server|relay|node|proxy)-([1-9][0-9]*)-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9]+)$/.exec(name);
       if (!match || match[4] !== namespace) continue;
       const pid = Number(match[2]), dir = join(base, name);
       if (!Number.isSafeInteger(pid) || pid > 2147483647) { failures++; continue; }

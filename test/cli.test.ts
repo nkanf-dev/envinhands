@@ -14,7 +14,7 @@ import { createMachineApi } from "../src/machine-api.ts";
 const testLogs = mkdtempSync(join(tmpdir(), "env-cli-logs-"));
 afterAll(() => rmSync(testLogs, { recursive: true, force: true }));
 function runCli(args: string[], env: NodeJS.ProcessEnv, deps: Partial<CliDependencies> = {}) {
-  return actualRunCli(args, ["server", "node", "relay"].includes(args[0] ?? "") ? { ENVINHANDS_LOG_DIR: testLogs, ...(args[0] === "node" ? { ENVINHANDS_TEAM_AUTO_KEYS: "0" } : {}), ...env } : env, deps);
+  return actualRunCli(args, ["server", "node", "relay", "proxy"].includes(args[0] ?? "") ? { ENVINHANDS_LOG_DIR: testLogs, ...(args[0] === "node" ? { ENVINHANDS_TEAM_AUTO_KEYS: "0" } : {}), ...env } : env, deps);
 }
 
 function context() {
@@ -54,9 +54,30 @@ describe("CLI validation and isolation", () => {
     const startProxy: CliDependencies["startProxy"] = async (opts) => { captured = opts; throw new Error("secret-do-not-print"); };
     const result = await runCli(["proxy", "node-1"], { ENVINHANDS_RELAY_URL: "wss://relay.example", ENVINHANDS_RELAY_SECRET: "secret-do-not-print" }, { ...c, startProxy });
     expect(result).toBe(1);
-    expect(captured).toEqual({ relayUrl: "wss://relay.example", nodeId: "node-1", secret: "secret-do-not-print" });
+    expect(captured).toEqual({ relayUrl: "wss://relay.example", nodeId: "node-1", secret: "secret-do-not-print", onEvent: expect.any(Function), diagnostics: false });
     expect(c.output()).toContain("Command failed");
     expect(c.output()).not.toContain("secret-do-not-print");
+  });
+  test("proxy enables private metadata logging and closes its logger", async () => {
+    const base = mkdtempSync(join(tmpdir(), "proxy-logs-"));
+    const c = context(); let stdout = "", callback: Parameters<CliDependencies["startProxy"]>[0]["onEvent"];
+    try {
+      const code = await runCli(["proxy", "local"], {ENVINHANDS_LOG_DIR: base, ENVINHANDS_RELAY_URL: "wss://example.org", ENVINHANDS_RELAY_SECRET: "relay-private-secret", ENVINHANDS_RELAY_DIAGNOSTICS: "1"},
+        {...c, stdout: {write(s) {stdout += s;}}, startProxy: async opts => {
+          expect(opts.diagnostics).toBe(true); callback = opts.onEvent;
+          opts.onEvent?.("proxy_closed", {bytesIn: 9, bytesOut: 7, closeCode: 1000});
+        }});
+      expect(code).toBe(0); expect(stdout).toBe("");
+      const writer = readdirSync(base).find(n => n.startsWith("proxy-"))!;
+      expect(statSync(join(base, writer)).mode & 0o777).toBe(0o700);
+      const path = join(base, writer, "events.jsonl");
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      const before = readFileSync(path, "utf8");
+      expect(before).toContain('"event":"proxy_closed"');
+      expect(before).not.toContain("relay-private-secret");
+      callback?.("proxy_late", {});
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {rmSync(base, {recursive:true, force:true});}
   });
   test("node starts reconnecting runtime with defaults and cleans up on signal", async () => {
     const c = context();
@@ -70,7 +91,7 @@ describe("CLI validation and isolation", () => {
     const result = runCli(["node", "n"], { ENVINHANDS_RELAY_URL: "ws://localhost:8788", ENVINHANDS_RELAY_SECRET: "s" }, { ...c, startNode });
     c.signals.emit("SIGTERM"); c.signals.emit("SIGINT");
     expect(await result).toBe(0);
-    expect(captured).toEqual({ relayUrl: "ws://localhost:8788", nodeId: "n", secret: "s", sshPort: 22, onEvent: expect.any(Function) });
+    expect(captured).toEqual({ relayUrl: "ws://localhost:8788", nodeId: "n", secret: "s", sshPort: 22, onEvent: expect.any(Function), diagnostics: false });
     expect(closes).toBe(1);
     expect(c.signals.listenerCount("SIGTERM")).toBe(0);
     expect(c.output()).toContain("wss://");
@@ -116,7 +137,7 @@ test("proxy executable sends errors to stderr and leaves stdout empty", async ()
   const secret = "secret-process-test";
   const child = Bun.spawn([process.execPath, "src/cli.ts", "proxy", "n"], {
     cwd: process.cwd(),
-    env: { ...process.env, ENVINHANDS_RELAY_URL: "ws://127.0.0.1:1", ENVINHANDS_RELAY_SECRET: secret },
+    env: { ...process.env, ENVINHANDS_LOG_DIR: testLogs, ENVINHANDS_RELAY_URL: "ws://127.0.0.1:1", ENVINHANDS_RELAY_SECRET: secret },
     stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
   const [stdout, stderr, exit] = await Promise.all([

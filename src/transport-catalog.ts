@@ -93,7 +93,12 @@ export async function fetchTransportCatalog(baseUrl: string, token: string, mach
   const url = new URL("/v1/transport-catalog",baseUrl); url.searchParams.set("machineId",machineId);
   if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost","127.0.0.1","[::1]"].includes(url.hostname))) throw new Error("Catalog requires HTTPS or loopback HTTP");
   const res = await fetcher(url, {headers:{authorization:`Bearer ${token}`}, redirect:"error"});
-  if (!res.ok) throw new Error(`Catalog HTTP ${res.status}`);
+  if (!res.ok) {
+    // Do not leave a response body (and its request deadline) alive when the
+    // status alone rejects the request. Cancellation need not complete to fail.
+    void res.body?.cancel().catch(() => {});
+    throw new Error(`Catalog HTTP ${res.status}`);
+  }
   const bytes = await bodyBytes(res, 65536); let data: unknown;
   try { data = JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes)); } catch { throw new Error("Invalid catalog response"); }
   return validatePage(data,machineId,Date.now());

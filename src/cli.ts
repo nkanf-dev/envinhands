@@ -431,7 +431,12 @@ export async function runCli(args: string[], env: NodeJS.ProcessEnv = process.en
         stderr: text => deps.stderr.write(text + "\n"),
         fetch: (url, init) => boundedFetch(url, init), platform: deps.platform,
       });
-    } finally { deps.signals.removeListener("SIGINT", cancel); deps.signals.removeListener("SIGTERM", cancel); }
+    } finally {
+      // Release any unconsumed bounded response and its deadline on every exit.
+      // The interactive SSH has already ended (or been cancelled) at this point.
+      controller.abort();
+      deps.signals.removeListener("SIGINT", cancel); deps.signals.removeListener("SIGTERM", cancel);
+    }
   }
   if (command === "access") return runRemoteAccessCli(args.slice(1), {write:text=>deps.stdout.write(text),error:text=>deps.stderr.write(text)}, deps.signals);
   if (command === "change" || command === "exec" || command === "verify-access" || command === "collaborate" || command === "device" || command === "provision" || command === "files") {

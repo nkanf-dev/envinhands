@@ -25,7 +25,7 @@ test("1000-page scans retain 5900 rows, 2MiB bounds, cursor stability, and legac
    const page=JSON.parse(raw) as Page; expect(page.version).toBe(2); if(revision===undefined) revision=page.revision; else expect(page.revision).toBe(revision);
    expect(page.agents.length).toBeLessThanOrEqual(1000); for(const row of page.agents){expect(seen.has(row.id)).toBe(false);seen.add(row.id);} pages++;
    if(page.nextCursor===null) break;
-   expect(page.nextCursor).toBe(page.agents.at(-1)?.id); query=`?${new URLSearchParams({limit:"1000",after:page.nextCursor,revision})}`;
+   expect(page.agents.length).toBeGreaterThan(0); expect(page.nextCursor).toBe(page.agents.at(-1)!.id); query=`?${new URLSearchParams({limit:"1000",after:page.nextCursor,revision})}`;
   }
   expect(pages).toBe(6); expect(seen).toEqual(expected);
   for(const q of ["?limit=0","?limit=01","?limit=1001","?limit=1e3","?limit=1000.0","?limit=1000&limit=1"]) expect((await get(api,q)).status).toBe(400);

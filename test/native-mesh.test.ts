@@ -91,7 +91,7 @@ test("bounded snapshot pages, legacy overflow, validation and restart expiration
   try {
     for (let i=0; i<205; i++) expect((await register(i)).status).toBe(200);
     expect((await request()).status).toBe(413);
-    for (const q of ["?limit=0", "?limit=101", "?limit=01", "?limit=1&limit=2", "?limit=1&after=bad&revision=0", "?limit=1&revision=1", "?foo=1"]) expect((await request(q)).status).toBe(400);
+    for (const q of ["?limit=0", "?limit=1001", "?limit=01", "?limit=1&limit=2", "?limit=1&after=bad&revision=0", "?limit=1&revision=1", "?foo=1"]) expect((await request(q)).status).toBe(400);
     let after: string | null = null, revision: string | undefined;
     const ids: string[] = [];
     do {

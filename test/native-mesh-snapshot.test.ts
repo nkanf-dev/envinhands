@@ -188,7 +188,7 @@ test("concurrent limit=100 v2 scans fail closed at snapshot capacity", async () 
       const id=String(i); insert.run(qualifiedAgentId("host",id),"host",id,null,"n".repeat(128),"active","2025-01-01T00:00:00.000Z");
     }})();
     const statuses:number[]=[];
-    for(let i=0;i<5;i++) {
+    for(let i=0;i<49;i++) {
       const res=await get(api,"?limit=100"); statuses.push(res.status);
       if(res.status===200) expect((await res.json() as Page).version).toBe(2);
     }

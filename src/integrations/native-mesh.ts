@@ -151,8 +151,8 @@ export function createNativeMeshApi(options: {dbPath: string; token: string}) {
   // Bound retained data, count and lifetime. The accounting includes two bytes per
   // JSON byte and a per-record allowance for JS strings/array entries. It is not
   // an exact V8/Bun heap measurement. Oversized scans fail, never truncate.
-  const MAX_SNAPSHOTS = 4, MAX_SNAPSHOT_RECORDS = 20_000;
-  const MAX_SNAPSHOT_MEMORY = 8 * 1024 * 1024, MAX_TOTAL_MEMORY = 24 * 1024 * 1024;
+  const MAX_SNAPSHOTS = 48, MAX_SNAPSHOT_RECORDS = 20_000;
+  const MAX_SNAPSHOT_MEMORY = 8 * 1024 * 1024, MAX_TOTAL_MEMORY = 256 * 1024 * 1024;
   const SNAPSHOT_TTL_MS = 30_000, SNAPSHOT_REUSE_MS = 10_000;
   type Snapshot = {rows: string[]; ids: string[]; topology: string; cursors: Map<number, Uint8Array>; memory: number; created: number; expires: number; timer?: ReturnType<typeof setTimeout>};
   const snapshots = new Map<string, Snapshot>();
@@ -294,7 +294,7 @@ export function createNativeMeshApi(options: {dbPath: string; token: string}) {
           if (!legacy && ([...params.keys()].some(k => !["limit", "after", "revision"].includes(k)) ||
               ["limit", "after", "revision"].some(k => params.getAll(k).length > 1))) throw new HttpError(400, "Invalid pagination");
           const rawLimit = params.get("limit"), after = params.get("after"), expected = params.get("revision");
-          if (!legacy && (rawLimit === null || !/^(?:[1-9]|[1-9][0-9]|100)$/.test(rawLimit) ||
+          if (!legacy && (rawLimit === null || !/^(?:[1-9][0-9]{0,2}|1000)$/.test(rawLimit) ||
               (after === null) !== (expected === null) || (after !== null && !qid(after)) ||
               (expected !== null && !/^(0|[1-9][0-9]{0,18})$/.test(expected)))) throw new HttpError(400, "Invalid pagination");
           const limit = legacy ? MAX_PAGE : Number(rawLimit);
